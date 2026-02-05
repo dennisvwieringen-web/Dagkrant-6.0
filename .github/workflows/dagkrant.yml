@@ -1,0 +1,39 @@
+name: De Dagkrant - Nieuwsbundel
+
+on:
+  schedule:
+    # Ma/Wo/Do/Vr om 15:00 UTC = 16:00 CET (wintertijd)
+    # In zomertijd (CEST) is dit 17:00 NL — eventueel aanpassen naar 14:00 UTC
+    # Dagen: 1=ma, 3=wo, 4=do, 5=vr
+    - cron: '0 15 * * 1,3,4,5'
+  workflow_dispatch:  # Handmatige trigger mogelijk
+
+jobs:
+  generate-dagkrant:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run De Dagkrant
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
+          SMTP_SERVER: smtp.gmail.com
+          SMTP_PORT: '587'
+        run: python src/main.py

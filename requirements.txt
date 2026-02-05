@@ -1,0 +1,17 @@
+# Email fetching & sending
+imapclient==2.3.1
+
+# AI Translation & Summarization
+openai==1.82.0
+
+# HTML Templating
+jinja2==3.1.6
+
+# PDF Rendering
+playwright==1.52.0
+
+# Environment variables
+python-dotenv==1.1.0
+
+# HTML parsing
+beautifulsoup4==4.13.4

@@ -1,0 +1,173 @@
+<div class="cover-page">
+    <style>
+        .cover-page {
+            max-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: center;
+            text-align: center;
+            font-family: Georgia, 'Times New Roman', serif;
+            color: #1a1a1a;
+            padding: 30px 20px 15px 20px;
+            page-break-after: always;
+        }
+
+        .cover-masthead {
+            border-top: 3px double #1a365d;
+            border-bottom: 3px double #1a365d;
+            padding: 12px 0;
+            margin-bottom: 15px;
+            width: 100%;
+        }
+
+        .cover-title {
+            font-size: 44px;
+            font-weight: bold;
+            letter-spacing: 5px;
+            text-transform: uppercase;
+            color: #1a365d;
+            margin: 0;
+        }
+
+        .cover-subtitle {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+            font-style: italic;
+        }
+
+        .cover-meta {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            font-size: 11px;
+            color: #444;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 8px;
+            margin-bottom: 15px;
+        }
+
+        .cover-edition {
+            font-weight: bold;
+            color: #1a365d;
+        }
+
+        .toc-section {
+            width: 100%;
+            text-align: left;
+            margin-top: 5px;
+            flex: 1;
+        }
+
+        .toc-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #1a365d;
+            border-bottom: 2px solid #1a365d;
+            padding-bottom: 5px;
+            margin-bottom: 10px;
+        }
+
+        .toc-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .toc-item {
+            padding: 6px 0;
+            border-bottom: 1px dotted #ddd;
+        }
+
+        .toc-item:last-child {
+            border-bottom: none;
+        }
+
+        .toc-link {
+            display: flex;
+            align-items: flex-start;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .toc-link:hover {
+            color: #2d5aa0;
+        }
+
+        .toc-item-number {
+            font-size: 18px;
+            font-weight: bold;
+            color: #1a365d;
+            margin-right: 10px;
+            min-width: 24px;
+        }
+
+        .toc-item-content {
+            flex: 1;
+        }
+
+        .toc-item-subject {
+            font-size: 14px;
+            font-weight: bold;
+            color: #1a1a1a;
+            margin-bottom: 1px;
+            line-height: 1.3;
+        }
+
+        .toc-item-sender {
+            font-size: 10px;
+            color: #888;
+        }
+
+        .toc-item-description {
+            font-size: 11px;
+            color: #555;
+            font-style: italic;
+            margin-top: 2px;
+            line-height: 1.3;
+        }
+
+        .cover-footer {
+            margin-top: 15px;
+            font-size: 10px;
+            color: #aaa;
+            font-style: italic;
+        }
+    </style>
+
+    <div class="cover-masthead">
+        <h1 class="cover-title">De Dagkrant</h1>
+        <p class="cover-subtitle">Jouw persoonlijke nieuwsbundel, dagelijks samengesteld</p>
+    </div>
+
+    <div class="cover-meta">
+        <span>{{ date }}</span>
+        <span class="cover-edition">Editie #{{ edition_number }}</span>
+        <span>{{ newsletter_count }} nieuwsbrie{{ 'f' if newsletter_count == 1 else 'ven' }}</span>
+    </div>
+
+    <div class="toc-section">
+        <h2 class="toc-title">Inhoudsopgave</h2>
+        <ul class="toc-list">
+            {% for entry in toc_entries %}
+            <li class="toc-item">
+                <a href="#newsletter-{{ loop.index }}" class="toc-link">
+                    <span class="toc-item-number">{{ loop.index }}</span>
+                    <div class="toc-item-content">
+                        <div class="toc-item-subject">{{ entry.short_title }}</div>
+                        <div class="toc-item-sender">{{ entry.sender }}</div>
+                        {% if entry.description %}
+                        <div class="toc-item-description">{{ entry.description }}</div>
+                        {% endif %}
+                    </div>
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="cover-footer">
+        Automatisch gegenereerd &middot; Powered by AI
+    </div>
+</div>
