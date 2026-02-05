@@ -76,6 +76,21 @@ _KILLLIST_EXACT = [
     # Placeholder / spam content
     r"welkom\s+bij\s+onze\s+website",
     r"onze\s+diensten:\s+webontwikkeling",
+    r"webontwikkeling",
+    r"web\s*design",
+    r"zoekmachine\s*optimalisatie",
+    r"seo\s+diensten",
+    # Extra banned phrases
+    r"bekijk\s+deze\s+e-?mail\s+in\s+uw\s+browser",
+    r"bekijk\s+deze\s+email\s+in\s+uw\s+browser",
+    r"can.?t\s+see\s+this\s+email",
+    r"trouble\s+viewing",
+    r"email\s+not\s+displaying",
+    r"view\s+this\s+email",
+    r"images\s+not\s+showing",
+    r"afbeeldingen\s+worden\s+niet\s+getoond",
+    r"click\s+here\s+to\s+view",
+    r"klik\s+hier\s+om\s+te\s+bekijken",
 ]
 
 _KILLLIST_PATTERN = re.compile("|".join(_KILLLIST_EXACT), re.IGNORECASE)
@@ -263,28 +278,42 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
     - Placeholder/spam tekst ("Welkom bij onze website")
     - Action buttons ("Subscribe", "Start writing")
     """
-    # Verwijder elementen op basis van hun eigen tekst (niet de tekst van kinderen)
-    for elem in list(soup.find_all(["div", "p", "span", "td", "a", "table", "tr", "section"])):
+    # PASS 1: Zoek in ALLE tekst-bevattende elementen (geen lengte-limiet meer!)
+    for elem in list(soup.find_all(["div", "p", "span", "td", "a", "table", "tr",
+                                     "section", "center", "li", "h1", "h2", "h3", "h4"])):
         if elem.parent is None:
             continue
         try:
-            # Gebruik de directe tekst van het element
             text = elem.get_text(strip=True)
         except Exception:
             continue
 
-        if not text or len(text) > 300:
-            # Skip lege elementen en te grote blokken (dat is waarschijnlijk content)
+        if not text:
             continue
 
-        if _KILLLIST_PATTERN.search(text):
-            # Zoek het kleinste container-element om te verwijderen
+        # Voor korte teksten (<= 500 chars): check tegen kill-list en verwijder hele element
+        if len(text) <= 500 and _KILLLIST_PATTERN.search(text):
             target = _find_smallest_killable_parent(elem)
             if target and target.parent is not None:
                 target.decompose()
                 continue
 
-    # Verwijder specifieke button-achtige links
+        # Voor langere teksten: check of de EERSTE 200 chars de kill-pattern bevatten
+        # (header-rommel staat altijd bovenaan)
+        if len(text) > 500:
+            first_chunk = text[:200]
+            if _KILLLIST_PATTERN.search(first_chunk):
+                # Probeer alleen het eerste child-element te verwijderen
+                for child in list(elem.children):
+                    if child.parent is None:
+                        continue
+                    if hasattr(child, 'get_text'):
+                        child_text = child.get_text(strip=True)
+                        if child_text and _KILLLIST_PATTERN.search(child_text) and len(child_text) <= 500:
+                            child.decompose()
+                            break
+
+    # PASS 2: Verwijder specifieke button-achtige links
     for a_tag in list(soup.find_all("a")):
         if a_tag.parent is None:
             continue
@@ -293,7 +322,6 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
         except Exception:
             continue
         if link_text in _BUTTON_KILL_TEXTS:
-            # Verwijder de link en zijn directe parent als die leeg achterblijft
             parent = a_tag.parent
             a_tag.decompose()
             if parent and parent.parent is not None:
@@ -303,6 +331,39 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
                         parent.decompose()
                 except Exception:
                     pass
+
+    # PASS 3: Brute-force tekst-scan voor hardnekkige spook-tekst
+    # Zoek letterlijk naar "Welkom bij onze website" in ALLE elementen
+    _GHOST_PHRASES = [
+        "welkom bij onze website",
+        "onze diensten: webontwikkeling",
+        "onze diensten:",
+        "webontwikkeling",
+    ]
+    for elem in list(soup.find_all(True)):
+        if elem.parent is None:
+            continue
+        try:
+            own_text = elem.string  # directe tekst, niet van kinderen
+            if own_text and any(phrase in own_text.lower() for phrase in _GHOST_PHRASES):
+                # Verwijder het element en zijn parent als die klein genoeg is
+                target = _find_smallest_killable_parent(elem)
+                if target and target.parent is not None:
+                    logger.info(f"    Spook-tekst verwijderd: '{own_text[:80]}...'")
+                    target.decompose()
+                    continue
+        except Exception:
+            continue
+        # Check ook get_text voor geneste tekst
+        try:
+            full_text = elem.get_text(strip=True).lower()
+            if len(full_text) < 600 and any(phrase in full_text for phrase in _GHOST_PHRASES):
+                target = _find_smallest_killable_parent(elem)
+                if target and target.parent is not None:
+                    logger.info(f"    Spook-tekst verwijderd (genest): '{full_text[:80]}...'")
+                    target.decompose()
+        except Exception:
+            continue
 
 
 def _find_smallest_killable_parent(elem) -> object:
@@ -320,7 +381,8 @@ def _find_smallest_killable_parent(elem) -> object:
         except Exception:
             break
         # Als de parent kort genoeg is, neem die als verwijder-target
-        if len(parent_text) < 200:
+        # Verhoogd van 200 naar 500 om grotere containers te pakken
+        if len(parent_text) < 500:
             target = target.parent
         else:
             break

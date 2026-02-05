@@ -95,47 +95,57 @@ def main():
     newsletters = fetch_newsletters(gmail_user, gmail_password, hours_back=hours_back)
 
     if not newsletters:
-        logger.info("Geen nieuwsbrieven gevonden in de laatste 24 uur. Klaar!")
+        logger.info(f"Geen nieuwsbrieven gevonden in de laatste {hours_back} uur. Klaar!")
         return
 
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
 
-    # --- Stap 2: HTML opschonen ---
-    logger.info("\n🧹 Stap 2: HTML opschonen...")
+    # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
+    # Elke nieuwsbrief wordt apart verwerkt. Als er iets misgaat,
+    # wordt die ene nieuwsbrief overgeslagen en gaat de rest door.
+    logger.info("\n🧹 Stap 2-3: Opschonen, dedupliceren, detecteren en vertalen...")
+    processed = []
     for i, nl in enumerate(newsletters):
+        subject = nl.get("subject", "(Onbekend)")
         try:
+            # Stap 2a: HTML opschonen
             original_len = len(nl["html_content"])
             nl["html_content"] = clean_html(nl["html_content"])
             cleaned_len = len(nl["html_content"])
             reduction = ((original_len - cleaned_len) / original_len * 100) if original_len > 0 else 0
-            logger.info(f"  [{i+1}/{len(newsletters)}] '{nl['subject']}' - {reduction:.0f}% rommel verwijderd")
-        except Exception as e:
-            logger.error(f"  Fout bij opschonen '{nl['subject']}': {e}")
-            continue
+            logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
 
-    # --- Stap 2b: Dubbele titels verwijderen ---
-    logger.info("\n🔤 Stap 2b: Dubbele titels verwijderen...")
-    for i, nl in enumerate(newsletters):
-        try:
-            nl["html_content"] = deduplicate_title(nl["html_content"], nl["subject"])
-        except Exception as e:
-            logger.error(f"  Fout bij deduplicatie '{nl['subject']}': {e}")
-            continue
+            # Stap 2b: Dubbele titels verwijderen
+            nl["html_content"] = deduplicate_title(nl["html_content"], subject)
 
-    # --- Stap 3: Vertaling & Taaldetectie ---
-    logger.info("\n🌍 Stap 3: Taaldetectie en vertaling...")
-    for i, nl in enumerate(newsletters):
-        try:
+            # Stap 3: Taaldetectie + vertaling
             lang = detect_language(nl["html_content"])
-            logger.info(f"  [{i+1}/{len(newsletters)}] '{nl['subject']}' - Taal: {lang.upper()}")
+            logger.info(f"    Taal: {lang.upper()}")
 
             if lang == "en":
                 logger.info(f"    Vertalen naar Nederlands...")
                 nl["html_content"] = translate_html(nl["html_content"], openai_api_key)
                 logger.info(f"    Vertaling voltooid.")
+
+            # Validatie: check of er nog content over is na cleaning
+            if not nl["html_content"] or len(nl["html_content"].strip()) < 50:
+                logger.warning(f"  ⚠️ '{subject}' is na opschoning vrijwel leeg — overgeslagen.")
+                continue
+
+            processed.append(nl)
+
         except Exception as e:
-            logger.error(f"  Fout bij verwerken '{nl['subject']}': {e}")
+            logger.error(f"  ❌ FOUT bij verwerken '{subject}': {e}")
+            logger.error(f"     Deze nieuwsbrief wordt OVERGESLAGEN, de rest gaat door.")
             continue
+
+    # Vervang de originele lijst door alleen de succesvol verwerkte items
+    newsletters = processed
+    logger.info(f"\n  {len(newsletters)} van {len(processed) + (len(newsletters) - len(newsletters))} nieuwsbrieven succesvol verwerkt.")
+
+    if not newsletters:
+        logger.error("Geen enkele nieuwsbrief kon worden verwerkt. Gestopt.")
+        return
 
     # --- Stap 4: Inhoudsopgave genereren ---
     logger.info("\n📋 Stap 4: Inhoudsopgave genereren...")
