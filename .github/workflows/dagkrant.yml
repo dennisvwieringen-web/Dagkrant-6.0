@@ -36,4 +36,4 @@ jobs:
           TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
           SMTP_SERVER: smtp.gmail.com
           SMTP_PORT: '587'
-        run: python src/main.py
+        run: cd src && python main.py

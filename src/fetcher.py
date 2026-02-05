@@ -7,6 +7,7 @@ zijn ontvangen. Retourneert een lijst van dictionaries met metadata en HTML-cont
 
 import imaplib
 import email
+import email.message
 import email.utils
 import logging
 import os
