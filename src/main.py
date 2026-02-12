@@ -100,6 +100,17 @@ def main():
 
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
 
+    # Limiet: maximaal 20 artikelen per PDF om overflow te voorkomen
+    MAX_ARTICLES = 20
+    if len(newsletters) > MAX_ARTICLES:
+        logger.warning(
+            f"⚠️ {len(newsletters)} artikelen gevonden, limiet is {MAX_ARTICLES}. "
+            f"Oudste {len(newsletters) - MAX_ARTICLES} worden overgeslagen."
+        )
+        # Sorteer op datum (nieuwste eerst), neem top 20
+        newsletters.sort(key=lambda x: x.get("date", ""), reverse=True)
+        newsletters = newsletters[:MAX_ARTICLES]
+
     # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
     # Elke nieuwsbrief wordt apart verwerkt. Als er iets misgaat,
     # wordt die ene nieuwsbrief overgeslagen en gaat de rest door.

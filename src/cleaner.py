@@ -43,6 +43,14 @@ _FOOTER_MARKERS = [
     r"privacy\s+policy",
     r"privacybeleid",
     r"terms\s+of\s+(service|use)",
+    # Fysieke adressen
+    r"suite\s+\d+",
+    r"\d+\s+\w+\s+(drive|dr|street|st|avenue|ave|boulevard|blvd|road|rd)\b",
+    # Generieke "powered by" en "sent by"
+    r"powered\s+by\b",
+    r"sent\s+by\b",
+    # Spam-diensten
+    r"\bicegram\b",
 ]
 
 _FOOTER_PATTERN = re.compile("|".join(_FOOTER_MARKERS), re.IGNORECASE)
@@ -105,6 +113,13 @@ _BUTTON_KILL_TEXTS = {
 }
 
 
+# Boilerplate-intro's van bekende nieuwsbrieven
+_BOILERPLATE_INTROS = [
+    re.compile(r"de\s+ai[-\s]wereld\s+ontwikkelt\s+zich\s+razendsnel", re.IGNORECASE),
+    re.compile(r"tag,?\s+favorite,?\s+share,?\s+track\s+your\s+progress", re.IGNORECASE),
+]
+
+
 def clean_html(html_content: str) -> str:
     """
     Schoon HTML op voor PDF-rendering.
@@ -127,27 +142,42 @@ def clean_html(html_content: str) -> str:
     if not html_content:
         return html_content
 
+    # Stap 0: Verwijder hardnekkige spooktekst op string-niveau (vóór parsing)
+    html_content = _remove_ghost_text_raw(html_content)
+
     # Stap 1: Verwijder MSO conditionals vóór BeautifulSoup parsing
     html_content = _remove_mso_conditionals(html_content)
 
     soup = BeautifulSoup(html_content, "html.parser")
 
-    # Stap 2: Verwijder HTML-comments
+    # Stap 2: Verwijder forwarding-headers en disclaimers
+    _remove_forwarding_headers(soup)
+
+    # Stap 3: Verwijder HTML-comments
     _remove_comments(soup)
 
-    # Stap 3: Verwijder script tags
+    # Stap 4: Verwijder script tags
     _remove_tags(soup, ["script", "noscript"])
 
-    # Stap 4: Verwijder tracking pixels
+    # Stap 4b: Verwijder loshangende "html" artefacten
+    _remove_html_artifact(soup)
+
+    # Stap 5: Verwijder tracking pixels
     _remove_tracking_pixels(soup)
 
-    # Stap 5: Verwijder kill-list elementen (header-rommel, placeholders, buttons)
+    # Stap 6: Verwijder kill-list elementen (header-rommel, placeholders, buttons)
     _remove_killlisted_elements(soup)
 
-    # Stap 6: Verwijder footer-secties
+    # Stap 6b: Verwijder bekende boilerplate-intro's
+    _remove_boilerplate_intros(soup)
+
+    # Stap 7: Verwijder ADVERTENTIE-blokken
+    _remove_advertisements(soup)
+
+    # Stap 8: Verwijder footer-secties
     _remove_footers(soup)
 
-    # Stap 7: Verwijder lege containers
+    # Stap 9: Verwijder lege containers
     _remove_empty_containers(soup)
 
     return str(soup)
@@ -197,6 +227,35 @@ def deduplicate_title(html_content: str, subject: str) -> str:
 
 # --- PRIVATE FUNCTIES ---
 
+def _remove_ghost_text_raw(html: str) -> str:
+    """
+    Verwijder hardnekkige placeholder/spooktekst op string-niveau.
+    Dit vangt gevallen die BeautifulSoup mist (bijv. tekst verborgen in
+    diep geneste tabellen, inline styles, of ongewone encodering).
+    """
+    _GHOST_REGEXES = [
+        # Verwijder volledige HTML-elementen die de spooktekst bevatten
+        re.compile(
+            r"<[^>]*>[^<]*welkom\s+bij\s+onze\s+website[^<]*</[^>]+>",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"<[^>]*>[^<]*onze\s+diensten\s*:?\s*webontwikkeling[^<]*</[^>]+>",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"<[^>]*>[^<]*zoekmachine\s*optimalisatie[^<]*</[^>]+>",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        # Plain-text fallback: verwijder de zinnen zelf
+        re.compile(r"welkom\s+bij\s+onze\s+website!?", re.IGNORECASE),
+        re.compile(r"onze\s+diensten\s*:?\s*webontwikkeling", re.IGNORECASE),
+    ]
+    for pattern in _GHOST_REGEXES:
+        html = pattern.sub("", html)
+    return html
+
+
 def _remove_mso_conditionals(html: str) -> str:
     """
     Verwijder Microsoft Office/Outlook conditionals.
@@ -236,6 +295,30 @@ def _remove_tags(soup: BeautifulSoup, tag_names: list[str]) -> None:
         for tag in list(soup.find_all(tag_name)):
             if tag.parent is not None:
                 tag.decompose()
+
+
+def _remove_html_artifact(soup: BeautifulSoup) -> None:
+    """
+    Verwijder loshangende 'html' tekst-artefacten.
+    Dit ontstaat wanneer geneste <html> tags in e-mail content door
+    BeautifulSoup worden omgezet naar kale tekst.
+    """
+    from bs4 import NavigableString
+
+    # Verwijder geneste <html> tags (binnen de body)
+    body = soup.find("body")
+    if body:
+        for nested_html in list(body.find_all("html")):
+            if nested_html.parent is not None:
+                nested_html.unwrap()  # Bewaar content, verwijder de tag
+
+    # Verwijder kale NavigableString nodes die alleen "html" bevatten
+    for text_node in list(soup.find_all(string=True)):
+        if isinstance(text_node, NavigableString):
+            stripped = text_node.strip().lower()
+            if stripped == "html":
+                logger.info("    HTML-artefact verwijderd: loshangende 'html' tekst")
+                text_node.extract()
 
 
 def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
@@ -389,6 +472,117 @@ def _find_smallest_killable_parent(elem) -> object:
     return target
 
 
+def _remove_forwarding_headers(soup: BeautifulSoup) -> None:
+    """
+    Verwijder standaard e-mail forwarding blokken en disclaimers.
+    Patronen: "---------- Forwarded message ---------", "Oorspronkelijk van:",
+    "From: ... Date: ... Subject: ... To: ...", "Dit e-mailbericht is uitsluitend bestemd voor..."
+    """
+    _FORWARD_PATTERNS = [
+        re.compile(r"-{3,}\s*forwarded\s+message\s*-{3,}", re.IGNORECASE),
+        re.compile(r"-{3,}\s*doorgestuurd\s+bericht\s*-{3,}", re.IGNORECASE),
+        re.compile(r"oorspronkelijk\s+(van|bericht)\s*:", re.IGNORECASE),
+        re.compile(r"^van\s*:.*datum\s*:.*onderwerp\s*:", re.IGNORECASE | re.DOTALL),
+        re.compile(r"^from\s*:.*date\s*:.*subject\s*:.*to\s*:", re.IGNORECASE | re.DOTALL),
+        re.compile(r"dit\s+e-?mailbericht\s+is\s+uitsluitend\s+bestemd\s+voor", re.IGNORECASE),
+        re.compile(r"dit\s+bericht\s+is\s+uitsluitend\s+bestemd", re.IGNORECASE),
+        re.compile(r"this\s+e-?mail\s+is\s+(solely\s+)?intended\s+for", re.IGNORECASE),
+        re.compile(r"begin\s+forwarded\s+message", re.IGNORECASE),
+        re.compile(r"begin\s+doorgestuurd\s+bericht", re.IGNORECASE),
+    ]
+
+    for elem in list(soup.find_all(["div", "p", "span", "td", "tr", "table",
+                                     "blockquote", "section", "pre"])):
+        if elem.parent is None:
+            continue
+        try:
+            text = elem.get_text(strip=True)
+        except Exception:
+            continue
+
+        if not text or len(text) < 10:
+            continue
+
+        for pattern in _FORWARD_PATTERNS:
+            if pattern.search(text):
+                # Als het element relatief klein is, verwijder het geheel
+                if len(text) < 1500:
+                    logger.info(f"    Forward-header verwijderd: '{text[:80]}...'")
+                    elem.decompose()
+                else:
+                    # Bij grotere elementen: probeer alleen het matchende child te verwijderen
+                    for child in list(elem.children):
+                        if child.parent is None:
+                            continue
+                        if hasattr(child, 'get_text'):
+                            child_text = child.get_text(strip=True)
+                            if child_text and pattern.search(child_text) and len(child_text) < 1500:
+                                logger.info(f"    Forward-header (child) verwijderd: '{child_text[:80]}...'")
+                                child.decompose()
+                break
+
+
+def _remove_boilerplate_intros(soup: BeautifulSoup) -> None:
+    """
+    Verwijder bekende boilerplate-intro's van specifieke nieuwsbrieven.
+    Bijv. AI Report's standaard openingszin, Readwise's vaste intro.
+    """
+    for elem in list(soup.find_all(["div", "p", "span", "td", "section", "tr"])):
+        if elem.parent is None:
+            continue
+        try:
+            text = elem.get_text(strip=True)
+        except Exception:
+            continue
+
+        if not text or len(text) > 800:
+            continue
+
+        for pattern in _BOILERPLATE_INTROS:
+            if pattern.search(text):
+                target = _find_smallest_killable_parent(elem)
+                if target and target.parent is not None:
+                    logger.info(f"    Boilerplate-intro verwijderd: '{text[:80]}...'")
+                    target.decompose()
+                break
+
+
+def _remove_advertisements(soup: BeautifulSoup) -> None:
+    """
+    Verwijder elementen die 'ADVERTENTIE', 'Gesponsord' of 'Sponsored' bevatten
+    als standalone blok/header. Verwijdert ook het volgende sibling-element
+    (dat doorgaans de advertentie-inhoud bevat).
+    """
+    _AD_PATTERN = re.compile(r"^\s*(advertentie|gesponsord|sponsored)\s*$", re.IGNORECASE)
+
+    for elem in list(soup.find_all(["div", "p", "span", "td", "h1", "h2", "h3",
+                                     "h4", "h5", "h6", "section", "center"])):
+        if elem.parent is None:
+            continue
+        try:
+            text = elem.get_text(strip=True)
+        except Exception:
+            continue
+
+        if _AD_PATTERN.match(text):
+            # Zoek het volgende sibling-element (de advertentie-inhoud)
+            next_sib = elem.find_next_sibling()
+            if next_sib and next_sib.parent is not None:
+                try:
+                    sib_text_len = len(next_sib.get_text(strip=True))
+                except Exception:
+                    sib_text_len = 0
+                if sib_text_len < 3000:
+                    logger.info(f"    Advertentie-inhoud verwijderd (sibling, {sib_text_len} chars)")
+                    next_sib.decompose()
+
+            # Verwijder het header-element zelf + eventueel de parent als die klein is
+            target = _find_smallest_killable_parent(elem)
+            if target and target.parent is not None:
+                logger.info(f"    Advertentie-blok verwijderd: '{text[:60]}'")
+                target.decompose()
+
+
 def _remove_footers(soup: BeautifulSoup) -> None:
     """
     Verwijder footer-secties die unsubscribe links, adressen etc. bevatten.
@@ -431,7 +625,7 @@ def _remove_footers(soup: BeautifulSoup) -> None:
                 break
 
         try:
-            if parent.parent is not None and len(parent.get_text(strip=True)) < 1500:
+            if parent.parent is not None and len(parent.get_text(strip=True)) < 2000:
                 parent.decompose()
         except Exception:
             pass

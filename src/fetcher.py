@@ -12,6 +12,7 @@ import email.utils
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from email.header import decode_header
 from typing import Optional
 
@@ -92,66 +93,160 @@ def fetch_newsletters(
         raise
 
     try:
-        # Gmail labels worden als IMAP-folders benaderd
-        status, _ = mail.select(f'"{label}"', readonly=True)
-        if status != "OK":
-            logger.warning(f"Label '{label}' niet gevonden, probeer inbox...")
-            mail.select("INBOX", readonly=True)
+        # Zoek alle IMAP-folders die beginnen met het label (inclusief sublabels)
+        # Gmail slaat sublabels op als "Nieuwsbrieven/AI Report", etc.
+        status, folder_list = mail.list('""', f'"{label}*"')
+        folders_to_search = []
 
-        # Zoek e-mails sinds de opgegeven datum
-        status, message_ids = mail.search(None, f'(SINCE "{since_str}")')
-        if status != "OK" or not message_ids[0]:
-            logger.info("Geen nieuwe nieuwsbrieven gevonden.")
-            return newsletters
+        if status == "OK" and folder_list:
+            for folder_info in folder_list:
+                if folder_info is None:
+                    continue
+                # Parse folder name uit IMAP LIST response
+                # Formaat: b'(\\HasChildren) "/" "Nieuwsbrieven"'
+                decoded = folder_info.decode("utf-8", errors="replace")
+                # Haal de folder-naam op (laatste quoted string)
+                parts = decoded.rsplit('" "', 1)
+                if len(parts) == 2:
+                    folder_name = parts[1].rstrip('"')
+                else:
+                    # Alternatief: neem alles na de laatste slash-spatie
+                    parts = decoded.rsplit('"', 2)
+                    if len(parts) >= 2:
+                        folder_name = parts[-2]
+                    else:
+                        continue
+                folders_to_search.append(folder_name)
 
-        ids = message_ids[0].split()
-        logger.info(f"{len(ids)} e-mail(s) gevonden sinds {since_str}.")
+        if not folders_to_search:
+            # Fallback: probeer alleen het opgegeven label
+            folders_to_search = [label]
 
-        for msg_id in ids:
+        logger.info(
+            f"Doorzoek {len(folders_to_search)} folder(s): "
+            f"{', '.join(folders_to_search)}"
+        )
+
+        seen_message_ids = set()  # Voorkom duplicaten over folders heen
+
+        for folder in folders_to_search:
             try:
-                status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                status, _ = mail.select(f'"{folder}"', readonly=True)
                 if status != "OK":
+                    logger.warning(f"Kan folder '{folder}' niet openen, skip.")
                     continue
 
-                raw_email = msg_data[0][1]
-                msg = email.message_from_bytes(raw_email)
-
-                # Parse datum en controleer of het binnen het tijdvenster valt
-                date_str = msg.get("Date", "")
-                parsed_date = email.utils.parsedate_to_datetime(date_str)
-                if parsed_date.tzinfo is None:
-                    parsed_date = parsed_date.replace(tzinfo=timezone.utc)
-                if parsed_date < since_date:
+                # Zoek e-mails sinds de opgegeven datum
+                status, message_ids = mail.search(None, f'(SINCE "{since_str}")')
+                if status != "OK" or not message_ids[0]:
+                    logger.debug(f"Geen e-mails in '{folder}' sinds {since_str}.")
                     continue
 
-                subject = _decode_header_value(msg.get("Subject", "(Geen onderwerp)"))
-                sender = _decode_header_value(msg.get("From", "(Onbekende afzender)"))
-                html_content = _extract_html_body(msg)
-                plain_content = _extract_plain_body(msg)
+                ids = message_ids[0].split()
+                logger.info(f"  {len(ids)} e-mail(s) in '{folder}' sinds {since_str}.")
 
-                if not html_content and not plain_content:
-                    logger.warning(f"Geen content in e-mail: {subject}")
-                    continue
+                for msg_id in ids:
+                    try:
+                        status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                        if status != "OK":
+                            continue
 
-                # Als er geen HTML is, wikkel plain text in basis-HTML
-                if not html_content and plain_content:
-                    html_content = f"<html><body><pre>{plain_content}</pre></body></html>"
+                        raw_email = msg_data[0][1]
+                        msg = email.message_from_bytes(raw_email)
 
-                newsletters.append({
-                    "subject": subject,
-                    "sender": sender,
-                    "date": parsed_date.isoformat(),
-                    "html_content": html_content,
-                    "plain_content": plain_content,
-                })
-                logger.info(f"  Opgehaald: {subject}")
+                        # Dedup op Message-ID over folders heen
+                        message_id = msg.get("Message-ID", "")
+                        if message_id and message_id in seen_message_ids:
+                            continue
+                        if message_id:
+                            seen_message_ids.add(message_id)
+
+                        # Parse datum en controleer of het binnen het tijdvenster valt
+                        date_str = msg.get("Date", "")
+                        parsed_date = email.utils.parsedate_to_datetime(date_str)
+                        if parsed_date.tzinfo is None:
+                            parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+                        if parsed_date < since_date:
+                            continue
+
+                        subject = _decode_header_value(msg.get("Subject", "(Geen onderwerp)"))
+                        sender = _decode_header_value(msg.get("From", "(Onbekende afzender)"))
+                        html_content = _extract_html_body(msg)
+                        plain_content = _extract_plain_body(msg)
+
+                        if not html_content and not plain_content:
+                            logger.warning(f"Geen content in e-mail: {subject}")
+                            continue
+
+                        # Als er geen HTML is, wikkel plain text in basis-HTML
+                        if not html_content and plain_content:
+                            html_content = f"<html><body><pre>{plain_content}</pre></body></html>"
+
+                        newsletters.append({
+                            "subject": subject,
+                            "sender": sender,
+                            "date": parsed_date.isoformat(),
+                            "html_content": html_content,
+                            "plain_content": plain_content,
+                        })
+                        logger.info(f"  Opgehaald: {subject}")
+
+                    except Exception as e:
+                        logger.error(f"Fout bij verwerken e-mail {msg_id}: {e}")
+                        continue
 
             except Exception as e:
-                logger.error(f"Fout bij verwerken e-mail {msg_id}: {e}")
+                logger.error(f"Fout bij doorzoeken folder '{folder}': {e}")
                 continue
 
     finally:
         mail.logout()
 
-    logger.info(f"Totaal {len(newsletters)} nieuwsbrief(ven) opgehaald.")
+    logger.info(f"Totaal {len(newsletters)} nieuwsbrief(ven) opgehaald (vóór dedup).")
+
+    # Deduplicatie: verwijder e-mails met zeer vergelijkbaar subject (>90% match)
+    newsletters = _deduplicate_newsletters(newsletters)
+    logger.info(f"Na deduplicatie: {len(newsletters)} nieuwsbrief(ven).")
+
     return newsletters
+
+
+def _deduplicate_newsletters(newsletters: list[dict]) -> list[dict]:
+    """
+    Verwijder duplicaten op basis van subject-overeenkomst (>90%).
+    Bij duplicaten: bewaar degene met de meest recente datum.
+    """
+    if not newsletters:
+        return newsletters
+
+    deduplicated = []
+
+    for nl in newsletters:
+        subject = nl.get("subject", "").lower().strip()
+        nl_date = nl.get("date", "")
+        is_duplicate = False
+
+        for i, existing in enumerate(deduplicated):
+            existing_subject = existing.get("subject", "").lower().strip()
+            similarity = SequenceMatcher(None, subject, existing_subject).ratio()
+
+            if similarity > 0.90:
+                # Bewaar de meest recente versie
+                if nl_date > existing.get("date", ""):
+                    logger.info(
+                        f"  Dedup: '{nl['subject'][:60]}' vervangt oudere versie "
+                        f"({similarity:.0%} match)"
+                    )
+                    deduplicated[i] = nl
+                else:
+                    logger.info(
+                        f"  Dedup: '{nl['subject'][:60]}' overgeslagen — "
+                        f"duplicaat ({similarity:.0%} match)"
+                    )
+                is_duplicate = True
+                break
+
+        if not is_duplicate:
+            deduplicated.append(nl)
+
+    return deduplicated
