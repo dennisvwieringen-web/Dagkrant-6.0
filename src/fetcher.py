@@ -66,6 +66,77 @@ def _extract_plain_body(msg: email.message.Message) -> Optional[str]:
     return None
 
 
+def extract_real_sender(plain_content: Optional[str], html_content: Optional[str], envelope_sender: str) -> str:
+    """
+    Probeer de echte afzender te achterhalen uit doorgestuurde e-mails.
+
+    Zoekt naar forwarding-patronen in plain-text én HTML-content:
+    - "Oorspronkelijk van: Naam <email>"
+    - "Van: Naam <email>" / "From: Naam <email>"
+    - "---------- Forwarded message ---------"
+    - "Begin forwarded message:"
+
+    Returns:
+        De geëxtraheerde echte afzendernaam, of de envelope_sender als fallback.
+    """
+    # Patronen om de echte afzender te vinden in forwarding-headers
+    _REAL_SENDER_PATTERNS = [
+        # Nederlands: "Oorspronkelijk van: Naam <email>" of "Oorspronkelijk van: Naam"
+        re.compile(r"oorspronkelijk\s+van\s*:\s*([^\n<\r]+?)(?:\s*<[^>]+>)?\s*[\r\n]", re.IGNORECASE),
+        # Engels: "From: Naam <email>" na een forwarding-marker
+        re.compile(r"from\s*:\s*([^\n<\r]+?)(?:\s*<[^>]+>)?\s*[\r\n]", re.IGNORECASE),
+        # Nederlands: "Van: Naam <email>"
+        re.compile(r"^van\s*:\s*([^\n<\r]+?)(?:\s*<[^>]+>)?\s*[\r\n]", re.IGNORECASE | re.MULTILINE),
+    ]
+
+    # Geef de voorkeur aan de plain-text body voor sender-extractie
+    search_texts = []
+    if plain_content:
+        search_texts.append(plain_content)
+    if html_content:
+        # Strip HTML-tags voor plain-text zoeken
+        from bs4 import BeautifulSoup as _BS
+        try:
+            search_texts.append(_BS(html_content, "html.parser").get_text())
+        except Exception:
+            pass
+
+    for text in search_texts:
+        # Controleer of dit een doorgestuurde e-mail is
+        is_forwarded = bool(re.search(
+            r"(-{3,}\s*(forwarded|doorgestuurd|begin forwarded)\s*(message|bericht)?\s*-{3,}|"
+            r"oorspronkelijk\s+(van|bericht)\s*:|"
+            r"begin\s+forwarded\s+message)",
+            text, re.IGNORECASE
+        ))
+
+        if not is_forwarded:
+            continue
+
+        # Zoek de forwarding-sectie en scan daarna naar de afzender
+        # Splits op de forwarding-marker en kijk in het volgende blok
+        forward_marker = re.search(
+            r"-{3,}\s*(forwarded|doorgestuurd|begin forwarded).*?-{3,}|"
+            r"oorspronkelijk\s+(van|bericht)\s*:|"
+            r"begin\s+forwarded\s+message",
+            text, re.IGNORECASE
+        )
+
+        if forward_marker:
+            # Zoek in het stuk DIRECT NA de forwarding-marker
+            after_marker = text[forward_marker.start():]
+            for pattern in _REAL_SENDER_PATTERNS:
+                m = pattern.search(after_marker[:500])  # Beperk zoekruimte
+                if m:
+                    extracted = m.group(1).strip()
+                    # Sanity check: niet leeg, niet te lang, geen e-mailadres zelf
+                    if extracted and len(extracted) < 100 and "@" not in extracted:
+                        logger.info(f"  Echte afzender geëxtraheerd: '{extracted}' (was: '{envelope_sender}')")
+                        return extracted
+
+    return envelope_sender
+
+
 def fetch_newsletters(
     gmail_user: str,
     gmail_password: str,
@@ -170,7 +241,7 @@ def fetch_newsletters(
                             continue
 
                         subject = _decode_header_value(msg.get("Subject", "(Geen onderwerp)"))
-                        sender = _decode_header_value(msg.get("From", "(Onbekende afzender)"))
+                        envelope_sender = _decode_header_value(msg.get("From", "(Onbekende afzender)"))
                         html_content = _extract_html_body(msg)
                         plain_content = _extract_plain_body(msg)
 
@@ -181,6 +252,9 @@ def fetch_newsletters(
                         # Als er geen HTML is, wikkel plain text in basis-HTML
                         if not html_content and plain_content:
                             html_content = f"<html><body><pre>{plain_content}</pre></body></html>"
+
+                        # Extraheer de echte afzender bij doorgestuurde e-mails
+                        sender = extract_real_sender(plain_content, html_content, envelope_sender)
 
                         newsletters.append({
                             "subject": subject,

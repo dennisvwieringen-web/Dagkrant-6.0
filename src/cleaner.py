@@ -99,6 +99,23 @@ _KILLLIST_EXACT = [
     r"afbeeldingen\s+worden\s+niet\s+getoond",
     r"click\s+here\s+to\s+view",
     r"klik\s+hier\s+om\s+te\s+bekijken",
+    # --- TASK 4: Aanvullende boilerplate & UI kill-list ---
+    r"favorite\s*/\s*discard\s*/\s*tag\s+or\s+share",
+    r"op\s+de\s+blog\s+of\s+reader\s+lezen",
+    r"lees\s+verder",
+    r"read\s+full\s+story",
+    r"^reactie$",
+    r"deze\s+e-?mail\s+doorgestuurd\??\s+abonneer",
+    r"forwarded\s+this\s+email\??\s+subscribe",
+    r"change\s+your\s+email\s+preferences\s*\|?\s*unsubscribe",
+    r"voor\s+alle\s+plus-abonnees",
+    r"^webversie$",
+    r"^advertentie\s*2?$",
+    r"listen\s+now",
+    r"preview\s+0:00",
+    r"upgrade\s+to\s+paid",
+    r"claim\s+my\s+free\s+post",
+    r"nrc>",
 ]
 
 _KILLLIST_PATTERN = re.compile("|".join(_KILLLIST_EXACT), re.IGNORECASE)
@@ -131,6 +148,8 @@ def clean_html(html_content: str) -> str:
     - Tracking pixels (1x1 afbeeldingen)
     - Kill-list elementen (browser-view, social, buttons, placeholders)
     - Footer/unsubscribe secties
+    - Gebruikershandtekening en disclaimers
+    - NRC drop-cap spans en promo-footer
     - Lege containers
 
     Args:
@@ -145,6 +164,9 @@ def clean_html(html_content: str) -> str:
     # Stap 0: Verwijder hardnekkige spooktekst op string-niveau (vóór parsing)
     html_content = _remove_ghost_text_raw(html_content)
 
+    # Stap 0b: Verwijder markdown code-block artefacten van AI-vertaling
+    html_content = _remove_ai_artifacts_raw(html_content)
+
     # Stap 1: Verwijder MSO conditionals vóór BeautifulSoup parsing
     html_content = _remove_mso_conditionals(html_content)
 
@@ -152,6 +174,9 @@ def clean_html(html_content: str) -> str:
 
     # Stap 2: Verwijder forwarding-headers en disclaimers
     _remove_forwarding_headers(soup)
+
+    # Stap 2b: Verwijder gebruikershandtekening en institutionele disclaimers
+    _remove_user_signature(soup)
 
     # Stap 3: Verwijder HTML-comments
     _remove_comments(soup)
@@ -164,6 +189,10 @@ def clean_html(html_content: str) -> str:
 
     # Stap 5: Verwijder tracking pixels
     _remove_tracking_pixels(soup)
+
+    # Stap 5b: NRC-specifiek: verwijder drop-cap spans/tables en promo-footer
+    _flatten_nrc_drop_caps(soup)
+    _remove_nrc_promo_footer(soup)
 
     # Stap 6: Verwijder kill-list elementen (header-rommel, placeholders, buttons)
     _remove_killlisted_elements(soup)
@@ -226,6 +255,20 @@ def deduplicate_title(html_content: str, subject: str) -> str:
 
 
 # --- PRIVATE FUNCTIES ---
+
+def _remove_ai_artifacts_raw(html: str) -> str:
+    """
+    Verwijder markdown code-block artefacten die de AI-vertaler soms achterlaat.
+    Bijv. loshangende "```html", "```", of de string "html" alleen op een regel.
+    """
+    # Verwijder ```html en ``` code fence markers (met of zonder newlines)
+    html = re.sub(r"```html\s*", "", html, flags=re.IGNORECASE)
+    html = re.sub(r"```\s*", "", html)
+    # Verwijder een loshangende "html" tag die als tekst-node staat
+    # (dit wordt ook via BeautifulSoup gedaan, maar hier als pre-pass)
+    html = re.sub(r"^\s*html\s*$", "", html, flags=re.MULTILINE | re.IGNORECASE)
+    return html
+
 
 def _remove_ghost_text_raw(html: str) -> str:
     """
@@ -644,3 +687,147 @@ def _remove_empty_containers(soup: BeautifulSoup) -> None:
                 tag.decompose()
         except Exception:
             continue
+
+
+# Handtekening-patronen van de gebruiker (Fioretti College)
+_SIGNATURE_PATTERNS = [
+    re.compile(r"docent\s+maatschappijleer", re.IGNORECASE),
+    re.compile(r"decaan\s+vwo", re.IGNORECASE),
+    re.compile(r"digicoach", re.IGNORECASE),
+    re.compile(r"mijn\s+werkdagen\s+zijn\s+maandag", re.IGNORECASE),
+    re.compile(r"fioretti\s+college", re.IGNORECASE),
+    re.compile(r"www\.fioretti\.nl", re.IGNORECASE),
+    re.compile(r"dit\s+e-?mailbericht\s+is\s+uitsluitend\s+bestemd\s+voor\s+de\s+geadresseerde", re.IGNORECASE),
+]
+
+
+def _remove_user_signature(soup: BeautifulSoup) -> None:
+    """
+    Verwijder de handtekening en institutionele disclaimers van de gebruiker.
+    Herkent Fioretti College-specifieke tekst en generieke disclaimers.
+    """
+    for elem in list(soup.find_all(["div", "p", "span", "td", "tr", "table",
+                                     "blockquote", "section", "pre"])):
+        if elem.parent is None:
+            continue
+        try:
+            text = elem.get_text(strip=True)
+        except Exception:
+            continue
+
+        if not text or len(text) < 5:
+            continue
+
+        for pattern in _SIGNATURE_PATTERNS:
+            if pattern.search(text):
+                # Verwijder het element als het klein genoeg is (handtekening-blok)
+                if len(text) < 2000:
+                    logger.info(f"    Handtekening/disclaimer verwijderd: '{text[:80]}...'")
+                    elem.decompose()
+                    break
+                # Bij grotere containers: zoek het matching child
+                for child in list(elem.children):
+                    if child.parent is None:
+                        continue
+                    if hasattr(child, 'get_text'):
+                        child_text = child.get_text(strip=True)
+                        if child_text and pattern.search(child_text) and len(child_text) < 2000:
+                            logger.info(f"    Handtekening-child verwijderd: '{child_text[:80]}...'")
+                            child.decompose()
+                break
+
+
+def _flatten_nrc_drop_caps(soup: BeautifulSoup) -> None:
+    """
+    Verwijder NRC-specifieke drop-cap constructies die letters laten zweven.
+
+    NRC gebruikt spans of tables met een grote eerste letter (drop cap).
+    In PDF-rendering veroorzaakt dit grote witruimtes en zwevende letters.
+    Oplossing: unwrap de spans/tables zodat de tekst aaneensluit.
+    """
+    # Patroon 1: Spans met display:table of float:left als drop-cap
+    for span in list(soup.find_all("span")):
+        if span.parent is None:
+            continue
+        style = span.get("style", "")
+        # Drop-cap spans hebben typisch een grote font-size of float:left
+        if re.search(r"float\s*:\s*left", style, re.IGNORECASE):
+            # Controleer of de span slechts 1-2 tekens bevat (drop cap letter)
+            text = span.get_text(strip=True)
+            if len(text) <= 2:
+                logger.info(f"    NRC drop-cap span afgevlakt: '{text}'")
+                span.unwrap()
+
+    # Patroon 2: Specifieke NRC table-drop-cap structuur
+    # <table><tr><td style="...font-size:large...">E</td><td>n dan de rest...</td></tr></table>
+    for table in list(soup.find_all("table")):
+        if table.parent is None:
+            continue
+        rows = table.find_all("tr")
+        if len(rows) != 1:
+            continue
+        cells = rows[0].find_all("td")
+        if len(cells) != 2:
+            continue
+
+        first_cell_text = cells[0].get_text(strip=True)
+        first_cell_style = cells[0].get("style", "")
+
+        # Als de eerste cel maar 1 teken bevat met grote font-size → drop cap table
+        if (len(first_cell_text) <= 2 and
+                re.search(r"font-size\s*:\s*(\d{2,}px|[3-9]\d*pt|xx?-large|[3-9]\d*em)", first_cell_style, re.IGNORECASE)):
+            # Vervang de hele table door de gecombineerde tekst als <p>
+            combined_text = table.get_text(strip=False)
+            new_p = soup.new_tag("p")
+            new_p.string = combined_text.strip()
+            logger.info(f"    NRC drop-cap table vervangen door <p>: '{combined_text[:40]}'")
+            if table.parent is not None:
+                table.replace_with(new_p)
+
+    # Patroon 3: CSS-gebaseerde drop-caps via ::first-letter pseudo — niet te verwijderen via HTML,
+    # maar we kunnen de style-attributen die drop-caps veroorzaken forceren naar inline
+    for elem in list(soup.find_all(True)):
+        if elem.parent is None:
+            continue
+        style = elem.get("style", "")
+        if re.search(r"display\s*:\s*table", style, re.IGNORECASE):
+            elem["style"] = re.sub(
+                r"display\s*:\s*table\b", "display: inline", style, flags=re.IGNORECASE
+            )
+
+
+def _remove_nrc_promo_footer(soup: BeautifulSoup) -> None:
+    """
+    Verwijder de NRC promo-footer die begint bij "REACTIES" of
+    "Bekijk al onze nieuwsbrieven". Verwijdert dit element EN alle
+    volgende siblings tot het einde van de parent.
+    """
+    _NRC_FOOTER_TRIGGERS = [
+        re.compile(r"^reacties$", re.IGNORECASE),
+        re.compile(r"bekijk\s+al\s+onze\s+nieuwsbrieven", re.IGNORECASE),
+        re.compile(r"broncode\s+van\s+de\s+week", re.IGNORECASE),
+        re.compile(r"week\s+van\s+de\s+hoofdredactie", re.IGNORECASE),
+    ]
+
+    for elem in list(soup.find_all(True)):
+        if elem.parent is None:
+            continue
+        try:
+            text = elem.get_text(strip=True)
+        except Exception:
+            continue
+
+        if not text:
+            continue
+
+        for pattern in _NRC_FOOTER_TRIGGERS:
+            if pattern.search(text) and len(text) < 500:
+                logger.info(f"    NRC promo-footer gevonden bij: '{text[:60]}' — rest verwijderd")
+                # Verwijder dit element EN alle volgende siblings
+                siblings_to_remove = list(elem.find_next_siblings())
+                for sib in siblings_to_remove:
+                    if sib.parent is not None:
+                        sib.decompose()
+                if elem.parent is not None:
+                    elem.decompose()
+                return  # Klaar, maar één keer doen

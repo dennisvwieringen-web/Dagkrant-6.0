@@ -131,10 +131,8 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
         }}
 
         .newsletter-header {{
-            background: linear-gradient(135deg, #1a365d, #2d5aa0);
-            color: white;
-            padding: 20px 25px;
-            border-radius: 8px;
+            color: #222222;
+            padding: 0;
             margin-bottom: 20px;
             page-break-after: avoid;
         }}
@@ -143,12 +141,16 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
             margin: 0 0 5px 0;
             font-size: 20px;
             font-weight: bold;
+            color: #222222;
+            border-bottom: 1px solid #cccccc;
+            padding-bottom: 8px;
+            margin-bottom: 15px;
         }}
 
         .newsletter-sender {{
             margin: 0;
-            font-size: 13px;
-            opacity: 0.85;
+            font-size: 12px;
+            color: #666666;
         }}
 
         .newsletter-content {{
@@ -156,13 +158,22 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
         }}
 
         /* --- Fix 1: Anti-gatenkaas CSS --- */
-        /* Afbeeldingen mogen NIET een hele pagina claimen */
+        /* Afbeeldingen: responsief, nooit te breed, gecentreerd */
+        img {{
+            max-width: 100% !important;
+            height: auto !important;
+            display: block;
+            margin: 0 auto;
+        }}
+
         .newsletter-content img {{
             max-width: 100% !important;
             max-height: 45vh !important;
             height: auto !important;
             width: auto !important;
             object-fit: contain;
+            display: block;
+            margin: 0 auto;
             page-break-inside: auto;
         }}
 
@@ -182,6 +193,14 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
         /* Laat tekst DOORLOPEN - alleen headers beschermen */
         h1, h2, h3, h4, h5, h6 {{
             page-break-after: avoid;
+            page-break-inside: avoid;
+        }}
+
+        /* Drop-cap fix: forceer inline weergave van NRC-specifieke spans */
+        .newsletter-content span[style*="font-size"] {{
+            display: inline !important;
+            float: none !important;
+            line-height: inherit !important;
         }}
 
         /* Paragrafen en lijstitems mogen WEL gesplitst worden */
