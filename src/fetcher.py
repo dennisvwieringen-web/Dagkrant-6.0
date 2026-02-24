@@ -11,6 +11,7 @@ import email.message
 import email.utils
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.header import decode_header
