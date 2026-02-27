@@ -120,6 +120,18 @@
             color: #888;
         }
 
+        .toc-item-translated {
+            display: inline-block;
+            font-size: 8px;
+            color: #2d7a4f;
+            background: #e8f5ee;
+            border-radius: 3px;
+            padding: 0 3px;
+            margin-left: 4px;
+            font-style: normal;
+            vertical-align: middle;
+        }
+
         .toc-item-description {
             font-size: 10px;
             color: #555;
@@ -156,7 +168,12 @@
                     <span class="toc-item-number">{{ loop.index }}</span>
                     <div class="toc-item-content">
                         <div class="toc-item-subject">{{ entry.short_title }}</div>
-                        <div class="toc-item-sender">{{ entry.sender }}</div>
+                        <div class="toc-item-sender">
+                            {{ entry.sender }}
+                            {% if entry.was_translated %}
+                            <span class="toc-item-translated">vertaald</span>
+                            {% endif %}
+                        </div>
                         {% if entry.description %}
                         <div class="toc-item-description">{{ entry.description }}</div>
                         {% endif %}

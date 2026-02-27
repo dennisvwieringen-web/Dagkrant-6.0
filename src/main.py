@@ -22,9 +22,10 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
+from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters
 from translator import detect_language, generate_toc_entry, translate_html
-from cleaner import clean_html, deduplicate_title
+from cleaner import clean_html, deduplicate_title, is_website_template, truncate_html_content
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
 
 # Logging configuratie
@@ -100,37 +101,70 @@ def main():
 
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
 
-    # Limiet: maximaal 20 artikelen per PDF om overflow te voorkomen
-    MAX_ARTICLES = 20
+    # Sorteer op datum (nieuwste eerst)
+    newsletters.sort(key=lambda x: x.get("date", ""), reverse=True)
+
+    # Dedupliceer per afzender: maximaal 2 artikelen per afzender
+    MAX_PER_SENDER = 2
+    sender_counts: dict[str, int] = {}
+    filtered_by_sender = []
+    for nl in newsletters:
+        sender = nl.get("sender", "").strip()
+        count = sender_counts.get(sender, 0)
+        if count < MAX_PER_SENDER:
+            filtered_by_sender.append(nl)
+            sender_counts[sender] = count + 1
+        else:
+            logger.info(f"  ⏭ Overgeslagen (max {MAX_PER_SENDER}/afzender): '{nl['subject'][:60]}'")
+    newsletters = filtered_by_sender
+
+    # Limiet: maximaal 15 artikelen per PDF om overflow te voorkomen
+    MAX_ARTICLES = 15
     if len(newsletters) > MAX_ARTICLES:
         logger.warning(
             f"⚠️ {len(newsletters)} artikelen gevonden, limiet is {MAX_ARTICLES}. "
             f"Oudste {len(newsletters) - MAX_ARTICLES} worden overgeslagen."
         )
-        # Sorteer op datum (nieuwste eerst), neem top 20
-        newsletters.sort(key=lambda x: x.get("date", ""), reverse=True)
         newsletters = newsletters[:MAX_ARTICLES]
 
     # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
     # Elke nieuwsbrief wordt apart verwerkt. Als er iets misgaat,
     # wordt die ene nieuwsbrief overgeslagen en gaat de rest door.
     logger.info("\n🧹 Stap 2-3: Opschonen, dedupliceren, detecteren en vertalen...")
+    # Maximum zichtbare woorden per artikel (≈ 3 A4-pagina's)
+    MAX_ARTICLE_WORDS = 700
+
     processed = []
     for i, nl in enumerate(newsletters):
         subject = nl.get("subject", "(Onbekend)")
         try:
-            # Stap 2a: HTML opschonen
+            # Stap 2a: Controleer op generieke website-template (vóór cleaning)
+            if is_website_template(nl["html_content"]):
+                logger.warning(f"  ⚠️ '{subject}' lijkt een website-template — overgeslagen.")
+                continue
+
+            # Stap 2b: HTML opschonen
             original_len = len(nl["html_content"])
             nl["html_content"] = clean_html(nl["html_content"])
             cleaned_len = len(nl["html_content"])
             reduction = ((original_len - cleaned_len) / original_len * 100) if original_len > 0 else 0
             logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
 
-            # Stap 2b: Dubbele titels verwijderen
+            # Stap 2c: Validatie zichtbare tekst (minimaal 300 tekens)
+            visible_text = BeautifulSoup(nl["html_content"], "html.parser").get_text(strip=True)
+            if len(visible_text) < 300:
+                logger.warning(
+                    f"  ⚠️ '{subject}' heeft te weinig zichtbare tekst "
+                    f"({len(visible_text)} tekens) — overgeslagen."
+                )
+                continue
+
+            # Stap 2d: Dubbele titels verwijderen
             nl["html_content"] = deduplicate_title(nl["html_content"], subject)
 
             # Stap 3: Taaldetectie + vertaling
             lang = detect_language(nl["html_content"])
+            nl["was_translated"] = (lang == "en")
             logger.info(f"    Taal: {lang.upper()}")
 
             if lang == "en":
@@ -138,10 +172,17 @@ def main():
                 nl["html_content"] = translate_html(nl["html_content"], openai_api_key)
                 logger.info(f"    Vertaling voltooid.")
 
-            # Validatie: check of er nog content over is na cleaning
-            if not nl["html_content"] or len(nl["html_content"].strip()) < 50:
-                logger.warning(f"  ⚠️ '{subject}' is na opschoning vrijwel leeg — overgeslagen.")
-                continue
+            # Stap 3b: Trunceer te lange artikelen
+            visible_words = len(
+                BeautifulSoup(nl["html_content"], "html.parser")
+                .get_text(separator=" ", strip=True)
+                .split()
+            )
+            if visible_words > MAX_ARTICLE_WORDS:
+                logger.info(
+                    f"    Artikel ingekort: {visible_words} woorden → max {MAX_ARTICLE_WORDS}"
+                )
+                nl["html_content"] = truncate_html_content(nl["html_content"], MAX_ARTICLE_WORDS)
 
             processed.append(nl)
 
@@ -163,12 +204,26 @@ def main():
     toc_entries = []
     for nl in newsletters:
         try:
-            toc_data = generate_toc_entry(nl["subject"], nl["sender"], openai_api_key)
+            # Geef een content-snippet mee voor betere beschrijvingen
+            snippet = ""
+            try:
+                snippet = (
+                    BeautifulSoup(nl["html_content"], "html.parser")
+                    .get_text(separator=" ", strip=True)[:500]
+                )
+            except Exception:
+                pass
+
+            toc_data = generate_toc_entry(
+                nl["subject"], nl["sender"], openai_api_key,
+                content_snippet=snippet,
+            )
             toc_entries.append({
                 "subject": nl["subject"],
                 "sender": nl["sender"],
                 "short_title": toc_data["short_title"],
                 "description": toc_data["description"],
+                "was_translated": nl.get("was_translated", False),
             })
             logger.info(f"  TOC: '{toc_data['short_title']}'")
         except Exception as e:
@@ -178,6 +233,7 @@ def main():
                 "sender": nl["sender"],
                 "short_title": nl["subject"][:50],
                 "description": "",
+                "was_translated": nl.get("was_translated", False),
             })
 
     # --- Stap 5: PDF samenstellen ---

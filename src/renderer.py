@@ -227,6 +227,21 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
         .newsletter-content table table {{
             width: 100% !important;
         }}
+
+        /* Voorkom lege pagina na het laatste artikel */
+        .newsletter-section:last-child {{
+            page-break-after: avoid;
+        }}
+
+        /* Afkap-noot stijl */
+        .truncation-note {{
+            color: #888;
+            font-style: italic;
+            margin-top: 20px;
+            border-top: 1px solid #ddd;
+            padding-top: 8px;
+            font-size: 11px;
+        }}
     </style>
 </head>
 <body>

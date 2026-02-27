@@ -171,14 +171,23 @@ def _split_html(html_content: str, max_size: int) -> list[str]:
     return chunks if chunks else [html_content]
 
 
-def generate_toc_entry(subject: str, sender: str, openai_api_key: str) -> dict:
+def generate_toc_entry(
+    subject: str, sender: str, openai_api_key: str, content_snippet: str = ""
+) -> dict:
     """
     Genereer een korte titel en beschrijving voor de inhoudsopgave.
+    Gebruikt een content-snippet voor betere, inhoudelijkere beschrijvingen.
 
     Returns:
-        Dict met 'short_title' (max 10 woorden) en 'description' (korte zin).
+        Dict met 'short_title' (max 8 woorden) en 'description' (feitelijke samenvatting).
     """
     client = OpenAI(api_key=openai_api_key)
+
+    # Bouw de user-content op met optionele snippet
+    user_content = f"Onderwerp: {subject}\nAfzender: {sender}"
+    if content_snippet:
+        # Gebruik max 400 tekens van de snippet voor context
+        user_content += f"\nBegin van artikel: {content_snippet[:400]}"
 
     try:
         response = client.chat.completions.create(
@@ -187,22 +196,25 @@ def generate_toc_entry(subject: str, sender: str, openai_api_key: str) -> dict:
                 {
                     "role": "system",
                     "content": (
-                        "Je maakt inhoudsopgave-items voor een dagelijkse krant. "
-                        "Geef op basis van het onderwerp en de afzender twee dingen:\n"
-                        "1. TITEL: Een korte, pakkende titel van maximaal 8 woorden (Nederlands)\n"
-                        "2. BESCHRIJVING: Een beschrijving van maximaal 12 woorden (Nederlands)\n\n"
-                        "Formaat (exact zo, zonder aanhalingstekens):\n"
+                        "Je maakt bondige inhoudsopgave-items voor een dagelijkse krant.\n"
+                        "Schrijf INFORMATIEVE, FEITELIJKE tekst op basis van de daadwerkelijke inhoud.\n"
+                        "VERBODEN: vage clickbait zoals 'Ontdek...', 'Verken...', 'Leer meer over...',\n"
+                        "'Bekijk...', 'Kom erachter...'. Beschrijf de KERNBOODSCHAP concreet.\n\n"
+                        "Geef twee dingen:\n"
+                        "1. TITEL: Een beknopte, informatieve titel van max 8 woorden (Nederlands)\n"
+                        "2. BESCHRIJVING: Een feitelijke samenvatting van max 12 woorden (Nederlands)\n\n"
+                        "Formaat (exact zo, zonder aanhalingstekens of extra tekst):\n"
                         "TITEL: ...\n"
                         "BESCHRIJVING: ..."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"Onderwerp: {subject}\nAfzender: {sender}",
+                    "content": user_content,
                 },
             ],
-            temperature=0.5,
-            max_tokens=80,
+            temperature=0.3,
+            max_tokens=100,
         )
         text = response.choices[0].message.content.strip()
 

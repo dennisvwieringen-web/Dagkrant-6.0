@@ -99,6 +99,11 @@ _KILLLIST_EXACT = [
     r"afbeeldingen\s+worden\s+niet\s+getoond",
     r"click\s+here\s+to\s+view",
     r"klik\s+hier\s+om\s+te\s+bekijken",
+    # Website-template patronen (gegenereerde placeholder-pagina's)
+    r"welkom\s+op\s+onze\s+website",
+    r"neem\s+contact\s+met\s+ons\s+op\s+via\s+ons\s+e-?mailadres",
+    r"onze\s+missie.*wij\s+streven",
+    r"voorbeeldbedrijf\.\s*alle\s+rechten",
     # --- TASK 4: Aanvullende boilerplate & UI kill-list ---
     r"favorite\s*/\s*discard\s*/\s*tag\s+or\s+share",
     r"op\s+de\s+blog\s+of\s+reader\s+lezen",
@@ -260,12 +265,15 @@ def _remove_ai_artifacts_raw(html: str) -> str:
     """
     Verwijder markdown code-block artefacten die de AI-vertaler soms achterlaat.
     Bijv. loshangende "```html", "```", of de string "html" alleen op een regel.
+    Handles ook geneste/dubbele code fences zoals "```html ```html" die ontstaan
+    als de AI-vertaler code fences toevoegt aan al bestaande fenced content.
     """
-    # Verwijder ```html en ``` code fence markers (met of zonder newlines)
-    html = re.sub(r"```html\s*", "", html, flags=re.IGNORECASE)
-    html = re.sub(r"```\s*", "", html)
-    # Verwijder een loshangende "html" tag die als tekst-node staat
-    # (dit wordt ook via BeautifulSoup gedaan, maar hier als pre-pass)
+    # Stap 1: Verwijder geneste/dubbele code fences (bijv. "```html ```html")
+    html = re.sub(r"(`{3,}html\s*){2,}", "", html, flags=re.IGNORECASE)
+    # Stap 2: Verwijder enkelvoudige ```html en ``` code fence markers
+    html = re.sub(r"```+html\s*", "", html, flags=re.IGNORECASE)
+    html = re.sub(r"```+\s*", "", html)
+    # Stap 3: Verwijder een loshangende "html" tag die als tekst-node staat
     html = re.sub(r"^\s*html\s*$", "", html, flags=re.MULTILINE | re.IGNORECASE)
     return html
 
@@ -275,11 +283,13 @@ def _remove_ghost_text_raw(html: str) -> str:
     Verwijder hardnekkige placeholder/spooktekst op string-niveau.
     Dit vangt gevallen die BeautifulSoup mist (bijv. tekst verborgen in
     diep geneste tabellen, inline styles, of ongewone encodering).
+    Detecteert ook generieke website-templates (bijv. "Welkom op onze website!")
+    die per ongeluk worden opgehaald in plaats van de nieuwsbrief-content.
     """
     _GHOST_REGEXES = [
         # Verwijder volledige HTML-elementen die de spooktekst bevatten
         re.compile(
-            r"<[^>]*>[^<]*welkom\s+bij\s+onze\s+website[^<]*</[^>]+>",
+            r"<[^>]*>[^<]*welkom\s+(bij|op)\s+onze\s+website[^<]*</[^>]+>",
             re.IGNORECASE | re.DOTALL,
         ),
         re.compile(
@@ -291,12 +301,40 @@ def _remove_ghost_text_raw(html: str) -> str:
             re.IGNORECASE | re.DOTALL,
         ),
         # Plain-text fallback: verwijder de zinnen zelf
-        re.compile(r"welkom\s+bij\s+onze\s+website!?", re.IGNORECASE),
+        re.compile(r"welkom\s+(bij|op)\s+onze\s+website!?", re.IGNORECASE),
         re.compile(r"onze\s+diensten\s*:?\s*webontwikkeling", re.IGNORECASE),
+        re.compile(r"neem\s+contact\s+met\s+ons\s+op", re.IGNORECASE),
+        re.compile(r"©\s*\d{4}\s*\w+\s*\.\s*alle\s+rechten\s+voorbehouden", re.IGNORECASE),
     ]
     for pattern in _GHOST_REGEXES:
         html = pattern.sub("", html)
     return html
+
+
+def is_website_template(html: str) -> bool:
+    """
+    Detecteer of de HTML-content een generieke website-template is
+    (bijv. een webpagina die per ongeluk is opgehaald in plaats van een nieuwsbrief).
+
+    Returns:
+        True als de content op een generieke website-template lijkt.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(separator=" ", strip=True).lower()
+
+    # Combinatie van typische website-navigatie + placeholder-content
+    _TEMPLATE_SIGNALS = [
+        r"welkom\s+(bij|op)\s+onze\s+website",
+        r"home\s*\|\s*over\s+ons\s*\|\s*diensten",
+        r"neem\s+contact\s+met\s+ons\s+op.*e-?mailadres",
+        r"onze\s+missie.*wij\s+streven",
+        r"voorbeeldbedrijf\.\s*alle\s+rechten\s+voorbehouden",
+    ]
+    matches = sum(
+        1 for p in _TEMPLATE_SIGNALS
+        if re.search(p, text, re.IGNORECASE | re.DOTALL)
+    )
+    return matches >= 2
 
 
 def _remove_mso_conditionals(html: str) -> str:
@@ -794,6 +832,56 @@ def _flatten_nrc_drop_caps(soup: BeautifulSoup) -> None:
             elem["style"] = re.sub(
                 r"display\s*:\s*table\b", "display: inline", style, flags=re.IGNORECASE
             )
+
+
+def truncate_html_content(html: str, max_words: int = 700) -> str:
+    """
+    Beperk de lengte van HTML-content tot max_words zichtbare woorden.
+    Verwijdert complete blok-elementen van achteren totdat we onder de limiet zitten.
+    Voegt een afkap-noot toe onderaan het artikel.
+
+    Args:
+        html: De opgeschoonde HTML-content.
+        max_words: Maximum aantal zichtbare woorden (default 700 ≈ ~3 A4-pagina's).
+
+    Returns:
+        HTML met maximaal max_words woorden, of ongewijzigd als al onder limiet.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(separator=" ", strip=True)
+    words = text.split()
+
+    if len(words) <= max_words:
+        return html
+
+    logger.info(f"    Artikel ingekort: {len(words)} → max {max_words} woorden")
+
+    # Verwijder blok-elementen van achteren totdat we onder de limiet zitten
+    body = soup.find("body") or soup
+    block_tags = ["p", "div", "section", "article", "blockquote", "ul", "ol",
+                  "h1", "h2", "h3", "h4", "h5", "h6", "table", "figure"]
+
+    # Verzamel alle top-level block-elementen (directe kinderen van body/root)
+    blocks = [el for el in body.children if hasattr(el, "get_text")]
+
+    while blocks:
+        current_words = len(soup.get_text(separator=" ", strip=True).split())
+        if current_words <= max_words:
+            break
+        last = blocks.pop()
+        if last.parent is not None and hasattr(last, "decompose"):
+            last.decompose()
+
+    # Voeg afkap-noot toe
+    note = soup.new_tag("p")
+    note["style"] = (
+        "color:#888; font-style:italic; margin-top:20px; "
+        "border-top:1px solid #ddd; padding-top:8px; font-size:11px;"
+    )
+    note.string = "▸ Artikel ingekort. Lees het volledige artikel via de originele bron."
+    (soup.find("body") or soup).append(note)
+
+    return str(soup)
 
 
 def _remove_nrc_promo_footer(soup: BeautifulSoup) -> None:
