@@ -13,25 +13,37 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-# Simpele heuristiek voor taaldetectie op basis van veelvoorkomende woorden
+# Heuristiek voor taaldetectie op basis van veelvoorkomende woorden.
+# Let op: "is" en "in" zijn bewust NIET in de Engels-markers opgenomen —
+# ze komen ook als gewone Nederlandse woorden voor en vervuilen anders de score.
 _DUTCH_MARKERS = {
     "de", "het", "een", "van", "in", "is", "dat", "op", "voor", "met",
     "zijn", "aan", "niet", "ook", "maar", "door", "nog", "dan", "wel",
     "naar", "uit", "bij", "om", "tot", "over", "deze", "wordt", "meer",
     "heeft", "worden", "kan", "dit", "alle", "hun", "veel", "waar",
+    # Extra sterke Nederlandse signaalwoorden
+    "als", "ze", "hij", "wij", "zij", "wat", "geen", "zo", "al",
+    "ons", "per", "werd", "die",
 }
 
 _ENGLISH_MARKERS = {
-    "the", "a", "an", "is", "in", "it", "of", "to", "and", "for",
+    # "is" en "in" weggelaten — ook gangbaar Nederlands, dus geen bruikbaar signaal
+    "the", "a", "an", "of", "to", "and", "for",
     "that", "with", "on", "are", "was", "this", "have", "from", "or",
     "be", "by", "not", "but", "what", "all", "were", "we", "when",
     "your", "can", "has", "more", "will", "been", "would", "who",
+    # Extra sterke Engelse signaalwoorden
+    "their", "they", "which", "its", "our", "you", "at", "as",
+    "if", "up", "about", "out", "just", "do",
 }
 
 
 def detect_language(html_content: str) -> str:
     """
     Detecteer of de HTML-content overwegend Engels of Nederlands is.
+
+    Samples woorden verdeeld over begin, midden en einde van de tekst
+    zodat een Nederlandstalige doorstuurheader de detectie niet verstoort.
 
     Returns:
         'nl' voor Nederlands, 'en' voor Engels
@@ -43,20 +55,29 @@ def detect_language(html_content: str) -> str:
     if not words:
         return "nl"
 
-    # Tel markerwoorden
-    sample = words[:500]  # Eerste 500 woorden is voldoende
+    # Verdeeld samplen: begin + midden + einde voor betere dekking
+    n = len(words)
+    if n > 900:
+        sample = words[:400] + words[n // 2 - 150 : n // 2 + 150] + words[-300:]
+    else:
+        sample = words
+
     nl_count = sum(1 for w in sample if w in _DUTCH_MARKERS)
     en_count = sum(1 for w in sample if w in _ENGLISH_MARKERS)
 
     ratio_nl = nl_count / len(sample)
     ratio_en = en_count / len(sample)
 
-    if ratio_nl > ratio_en:
+    logger.debug(
+        f"Taaldetectie: NL={nl_count} ({ratio_nl:.1%}), EN={en_count} ({ratio_en:.1%})"
+    )
+
+    # Vertaal tenzij Nederlands DUIDELIJK domineert (factor 1.3).
+    # Bij twijfel liever onnodig vertalen dan Engels in de Dagkrant laten staan.
+    if ratio_nl >= ratio_en * 1.3:
         return "nl"
-    elif ratio_en > ratio_nl:
-        return "en"
     else:
-        return "nl"  # Bij gelijkspel: neem aan dat het Nederlands is
+        return "en"
 
 
 def translate_html(html_content: str, openai_api_key: str) -> str:
