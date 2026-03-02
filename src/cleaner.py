@@ -697,6 +697,9 @@ def _remove_footers(soup: BeautifulSoup) -> None:
             continue
 
         parent = elem
+        # Klim omhoog zolang de parent uitsluitend footer-gerelateerde inhoud bevat.
+        # Drempel bewust laag (600 chars): voorkomt dat artikelen met minder dan
+        # ~100 woorden per ongeluk worden meegezogen met de footer.
         while parent.parent and parent.parent.name not in ["body", "html", "[document]"]:
             if parent.parent.parent is None:
                 break
@@ -704,13 +707,13 @@ def _remove_footers(soup: BeautifulSoup) -> None:
                 parent_text = parent.parent.get_text(strip=True)
             except Exception:
                 break
-            if _FOOTER_PATTERN.search(parent_text) and len(parent_text) < 2000:
+            if _FOOTER_PATTERN.search(parent_text) and len(parent_text) < 600:
                 parent = parent.parent
             else:
                 break
 
         try:
-            if parent.parent is not None and len(parent.get_text(strip=True)) < 2000:
+            if parent.parent is not None and len(parent.get_text(strip=True)) < 600:
                 parent.decompose()
         except Exception:
             pass

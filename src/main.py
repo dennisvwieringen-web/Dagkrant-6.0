@@ -151,7 +151,12 @@ def main():
             logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
 
             # Stap 2c: Validatie zichtbare tekst (minimaal 300 tekens)
-            visible_text = BeautifulSoup(nl["html_content"], "html.parser").get_text(strip=True)
+            # Let op: verwijder <style>-tags vóór get_text() — anders telt CSS-code
+            # mee als "zichtbare tekst" en passeren lege newsletters de drempel.
+            _check_soup = BeautifulSoup(nl["html_content"], "html.parser")
+            for _style_tag in _check_soup.find_all(["style", "link"]):
+                _style_tag.decompose()
+            visible_text = _check_soup.get_text(strip=True)
             if len(visible_text) < 300:
                 logger.warning(
                     f"  ⚠️ '{subject}' heeft te weinig zichtbare tekst "
