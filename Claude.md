@@ -18,10 +18,11 @@ pip install -r requirements.txt
 playwright install chromium
 
 # Run the full pipeline locally (requires .env file)
-python src/main.py
+# ⚠️  Always run from src/ — modules use relative imports and fail from root
+cd src && python main.py
 
-# Test a specific module in isolation (no .env needed for cleaning/rendering logic)
-python -c "from src.cleaner import clean_html; print(clean_html('<p>Test</p>'))"
+# Test a specific module in isolation (run from src/, no .env needed)
+cd src && python -c "from cleaner import clean_html; print(clean_html('<p>Test</p>'))"
 
 # Manually trigger a GitHub Actions run
 # → GitHub UI: Actions → "De Dagkrant - Nieuwsbundel" → Run workflow
@@ -133,3 +134,13 @@ Public utility functions: `is_website_template()`, `truncate_html_content()`, `d
 **PDF rendering via Playwright:** WeasyPrint was considered but Playwright (Chromium headless) gives better CSS support. The HTML is written to a temp file and loaded via `file:///` to avoid network latency. A 2-second buffer after `networkidle` allows images to load.
 
 **Edition numbering:** `(today - 2025-01-01).days + 1` — purely date-based, no state file needed.
+
+**Run context is `src/`, not root:** All modules use bare imports (`from fetcher import ...`). Running `python src/main.py` from the repo root fails with `ModuleNotFoundError`. GitHub Actions handles this via `cd src && python main.py`.
+
+**Footer removal threshold is 600 chars:** `_remove_footers()` in `cleaner.py` only climbs the DOM into parent containers with < 600 chars of total text. Raising this limit causes short articles (< ~100 words, like Cal Newport / Matthijs van Nieuwkerk) to be silently wiped together with their footer.
+
+**Visible-text check must strip `<style>` tags:** The 300-char minimum in `main.py` decomposes all `style` and `link` tags before calling `get_text()`. Without this, inline CSS inflates the char count and lets effectively-empty newsletters pass the quality gate.
+
+**Print link colour:** `a { color: #333 !important }` in `compose_full_html()` overrides browser-blue links for all article content. Weaken this only if a specific newsletter needs coloured links.
+
+**Cover TOC uses CSS columns:** `column-count: 2` on `.toc-list` in `cover.html`. Requires `break-inside: avoid` on `.toc-item` — without it Chromium splits individual TOC entries across columns.
