@@ -9,75 +9,86 @@
             text-align: center;
             font-family: Georgia, 'Times New Roman', serif;
             color: #1a1a1a;
-            padding: 30px 20px 15px 20px;
+            padding: 28px 20px 12px 20px;
             page-break-after: always;
         }
 
         .cover-masthead {
-            border-top: 3px double #1a365d;
-            border-bottom: 3px double #1a365d;
-            padding: 12px 0;
-            margin-bottom: 15px;
+            border-top: 4px solid #1a365d;
+            border-bottom: 1px solid #1a365d;
+            padding: 10px 0 8px 0;
+            margin-bottom: 0;
             width: 100%;
         }
 
         .cover-title {
-            font-size: 44px;
+            font-size: 48px;
             font-weight: bold;
-            letter-spacing: 5px;
+            letter-spacing: 6px;
             text-transform: uppercase;
             color: #1a365d;
             margin: 0;
         }
 
         .cover-subtitle {
-            font-size: 12px;
+            font-size: 11px;
             color: #666;
-            margin-top: 4px;
+            margin-top: 3px;
             font-style: italic;
+            letter-spacing: 0.5px;
         }
 
         .cover-meta {
             display: flex;
             justify-content: space-between;
+            align-items: center;
             width: 100%;
-            font-size: 11px;
-            color: #444;
+            font-size: 10px;
+            color: #555;
             border-bottom: 1px solid #ccc;
-            padding-bottom: 8px;
-            margin-bottom: 15px;
+            border-top: 1px solid #e8e8e8;
+            padding: 6px 0;
+            margin-bottom: 14px;
         }
 
         .cover-edition {
             font-weight: bold;
             color: #1a365d;
+            letter-spacing: 0.5px;
         }
 
         .toc-section {
             width: 100%;
             text-align: left;
-            margin-top: 5px;
+            margin-top: 4px;
             flex: 1;
         }
 
         .toc-title {
-            font-size: 15px;
+            font-size: 13px;
             font-weight: bold;
             color: #1a365d;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
             border-bottom: 2px solid #1a365d;
-            padding-bottom: 3px;
-            margin-bottom: 6px;
+            padding-bottom: 4px;
+            margin-bottom: 8px;
         }
 
         .toc-list {
             list-style: none;
             padding: 0;
             margin: 0;
+            column-count: 2;
+            column-gap: 22px;
+            column-rule: 1px solid #ddd;
         }
 
         .toc-item {
-            padding: 3px 0;
-            border-bottom: 1px dotted #ddd;
+            padding: 4px 0 4px 8px;
+            border-bottom: 1px solid #ebebeb;
+            break-inside: avoid;
+            -webkit-column-break-inside: avoid;
         }
 
         .toc-item:last-child {
@@ -91,16 +102,13 @@
             color: inherit;
         }
 
-        .toc-link:hover {
-            color: #2d5aa0;
-        }
-
         .toc-item-number {
-            font-size: 13px;
+            font-size: 12px;
             font-weight: bold;
             color: #1a365d;
-            margin-right: 8px;
-            min-width: 20px;
+            margin-right: 7px;
+            min-width: 18px;
+            padding-top: 1px;
         }
 
         .toc-item-content {
@@ -108,43 +116,50 @@
         }
 
         .toc-item-subject {
-            font-size: 12px;
+            font-size: 11.5px;
             font-weight: bold;
             color: #1a1a1a;
             margin-bottom: 0;
-            line-height: 1.2;
+            line-height: 1.25;
         }
 
         .toc-item-sender {
             font-size: 9px;
-            color: #888;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
         }
 
         .toc-item-translated {
             display: inline-block;
-            font-size: 8px;
+            font-size: 7.5px;
             color: #2d7a4f;
             background: #e8f5ee;
-            border-radius: 3px;
+            border-radius: 2px;
             padding: 0 3px;
             margin-left: 4px;
             font-style: normal;
             vertical-align: middle;
+            text-transform: none;
         }
 
         .toc-item-description {
             font-size: 10px;
-            color: #555;
-            font-style: italic;
+            color: #666;
             margin-top: 1px;
-            line-height: 1.2;
+            line-height: 1.3;
         }
 
         .cover-footer {
-            margin-top: 15px;
-            font-size: 10px;
-            color: #aaa;
-            font-style: italic;
+            margin-top: 12px;
+            padding-top: 8px;
+            border-top: 1px solid #e8e8e8;
+            width: 100%;
+            text-align: center;
+            font-size: 9px;
+            color: #bbb;
+            letter-spacing: 1px;
+            text-transform: uppercase;
         }
     </style>
 
@@ -185,6 +200,6 @@
     </div>
 
     <div class="cover-footer">
-        Automatisch gegenereerd &middot; Powered by AI
+        De Dagkrant &middot; {{ date }}
     </div>
 </div>

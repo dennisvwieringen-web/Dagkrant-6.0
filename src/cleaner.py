@@ -121,6 +121,10 @@ _KILLLIST_EXACT = [
     r"upgrade\s+to\s+paid",
     r"claim\s+my\s+free\s+post",
     r"nrc>",
+    # Afbeeldingscaptions met website/reactie-links (Cal Newport-stijl)
+    r"om\s+de\s+website\s+te\s+(lezen|bezoeken)",
+    r"om\s+een\s+reactie\s+achter\s+te\s+laten",
+    r"lees\s+online\b",
 ]
 
 _KILLLIST_PATTERN = re.compile("|".join(_KILLLIST_EXACT), re.IGNORECASE)

@@ -94,6 +94,7 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
         section = f"""
         <div class="newsletter-section" id="{anchor_id}" style="page-break-before: always;">
             <div class="newsletter-header">
+                <span class="article-number">Nr. {i + 1}</span>
                 <h2 class="newsletter-title">{nl['subject']}</h2>
                 <p class="newsletter-sender">{nl['sender']}</p>
             </div>
@@ -130,27 +131,44 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
             page-break-before: always;
         }}
 
+        /* Neutraliseer linkkleur voor print — blauw ziet er uit als een webpagina */
+        a {{
+            color: #333 !important;
+        }}
+
         .newsletter-header {{
-            color: #222222;
-            padding: 0;
+            padding: 10px 12px 10px 14px;
             margin-bottom: 20px;
             page-break-after: avoid;
+            border-left: 4px solid #1a365d;
+            background: #f8f7f5;
+        }}
+
+        .article-number {{
+            display: block;
+            font-size: 10px;
+            font-weight: bold;
+            color: #1a365d;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 4px;
+            opacity: 0.75;
         }}
 
         .newsletter-title {{
-            margin: 0 0 5px 0;
+            margin: 0 0 4px 0;
             font-size: 20px;
             font-weight: bold;
-            color: #222222;
-            border-bottom: 1px solid #cccccc;
-            padding-bottom: 8px;
-            margin-bottom: 15px;
+            color: #1a365d;
+            line-height: 1.3;
         }}
 
         .newsletter-sender {{
             margin: 0;
-            font-size: 12px;
-            color: #666666;
+            font-size: 10px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }}
 
         .newsletter-content {{
