@@ -16,6 +16,7 @@ Vrijdag  → 24 uur terug (do 16:00 → vr 16:00)
 
 import logging
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters
 from translator import detect_language, generate_toc_entry, translate_html
-from cleaner import clean_html, deduplicate_title, is_website_template
+from cleaner import clean_html, deduplicate_title, is_website_template, strip_ai_artifacts
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
 
 # Logging configuratie
@@ -35,6 +36,32 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("dagkrant")
+
+# Regex voor het detecteren van display:none in inline styles
+_DISPLAY_NONE_RE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
+
+
+def _get_truly_visible_text(html: str) -> str:
+    """
+    Meet de daadwerkelijk zichtbare tekst van HTML — zoals Chromium het rendert.
+
+    Verwijdert vóór het tellen:
+    - <style> en <link> tags (CSS telt niet als tekst)
+    - Elementen met display:none (hidden preview text in email-templates)
+    - Non-breaking spaces (&nbsp; / \\xa0) die als layout-spacers dienen
+
+    Dit voorkomt dat emails met veel verborgen tekst of &nbsp;-padding
+    de minimumdrempel passeren en als lege pagina's in de PDF verschijnen.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all(["style", "link"]):
+        tag.decompose()
+    for tag in soup.find_all(style=_DISPLAY_NONE_RE):
+        tag.decompose()
+    text = soup.get_text(strip=True)
+    # Strip non-breaking spaces (veelgebruikt als layout-spacer in email-tabellen)
+    text = text.replace("\xa0", "").strip()
+    return text
 
 # Printschema: hoeveel uur terugkijken per weekdag
 # 0=ma, 1=di, 2=wo, 3=do, 4=vr, 5=za, 6=zo
@@ -140,34 +167,13 @@ def main():
             logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
 
             # Stap 2c: Validatie zichtbare tekst (minimaal 300 tekens)
-            # Let op: verwijder <style>-tags vóór get_text() — anders telt CSS-code
-            # mee als "zichtbare tekst" en passeren lege newsletters de drempel.
-            _check_soup = BeautifulSoup(nl["html_content"], "html.parser")
-            for _style_tag in _check_soup.find_all(["style", "link"]):
-                _style_tag.decompose()
-            visible_text = _check_soup.get_text(strip=True)
+            # Gebruikt _get_truly_visible_text() die ook display:none en &nbsp;
+            # weefiltert — dit vangt Substack-stijl emails met hidden preview text.
+            visible_text = _get_truly_visible_text(nl["html_content"])
             if len(visible_text) < 300:
                 logger.warning(
                     f"  ⚠️ '{subject}' heeft te weinig zichtbare tekst "
                     f"({len(visible_text)} tekens) — overgeslagen."
-                )
-                continue
-
-            # Stap 2c(2): Structurele inhoudscheck — voorkomt dat alleen link-lijsten
-            # of minimale fragmenten de PDF halen als visueel lege pagina's.
-            # Eis: minstens 1 blok-element met > 60 chars ÓÓGT minstens 2 blokken met > 20 chars.
-            _blocks_60 = [
-                el for el in _check_soup.find_all(["p", "li", "h1", "h2", "h3", "blockquote", "td"])
-                if len(el.get_text(strip=True)) > 60
-            ]
-            _blocks_20 = [
-                el for el in _check_soup.find_all(["p", "li", "h1", "h2", "h3", "blockquote", "td"])
-                if len(el.get_text(strip=True)) > 20
-            ]
-            if not _blocks_60 and len(_blocks_20) < 2:
-                logger.warning(
-                    f"  ⚠️ '{subject}' mist substantiële tekstblokken "
-                    f"(blokken>60: {len(_blocks_60)}, blokken>20: {len(_blocks_20)}) — overgeslagen."
                 )
                 continue
 
@@ -182,19 +188,21 @@ def main():
             if lang == "en":
                 logger.info(f"    Vertalen naar Nederlands...")
                 nl["html_content"] = translate_html(nl["html_content"], openai_api_key)
+                # Vertaler kan code-fence artefacten toevoegen (```html ... ```)
+                nl["html_content"] = strip_ai_artifacts(nl["html_content"])
                 logger.info(f"    Vertaling voltooid.")
 
-                # Re-valideer na vertaling: AI kan content soms inkorten of weggooien
-                _post_soup = BeautifulSoup(nl["html_content"], "html.parser")
-                for _s in _post_soup.find_all(["style", "link"]):
-                    _s.decompose()
-                post_text = _post_soup.get_text(strip=True)
-                if len(post_text) < 200:
-                    logger.warning(
-                        f"  ⚠️ '{subject}' te weinig content na vertaling "
-                        f"({len(post_text)} tekens) — overgeslagen."
-                    )
-                    continue
+            # FINALE VEILIGHEIDSCHECK: meet de echt zichtbare tekst na ALLE
+            # verwerking (cleaning + deduplicate_title + vertaling).
+            # Dit is het definitieve vangnet — als hier < 100 chars overblijft,
+            # verschijnt de newsletter als lege pagina in de PDF.
+            final_visible = _get_truly_visible_text(nl["html_content"])
+            if len(final_visible) < 100:
+                logger.warning(
+                    f"  ⚠️ '{subject}' heeft te weinig zichtbare content na alle "
+                    f"verwerking ({len(final_visible)} tekens) — overgeslagen."
+                )
+                continue
 
             processed.append(nl)
 

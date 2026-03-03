@@ -265,6 +265,11 @@ def deduplicate_title(html_content: str, subject: str) -> str:
 
 # --- PRIVATE FUNCTIES ---
 
+def strip_ai_artifacts(html: str) -> str:
+    """Publieke wrapper voor _remove_ai_artifacts_raw (voor gebruik na vertaling)."""
+    return _remove_ai_artifacts_raw(html)
+
+
 def _remove_ai_artifacts_raw(html: str) -> str:
     """
     Verwijder markdown code-block artefacten die de AI-vertaler soms achterlaat.
