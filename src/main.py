@@ -105,7 +105,7 @@ def main():
     newsletters.sort(key=lambda x: x.get("date", ""), reverse=True)
 
     # Dedupliceer per afzender: maximaal 2 artikelen per afzender
-    MAX_PER_SENDER = 2
+    MAX_PER_SENDER = 3
     sender_counts: dict[str, int] = {}
     filtered_by_sender = []
     for nl in newsletters:
