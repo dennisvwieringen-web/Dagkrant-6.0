@@ -99,16 +99,16 @@ Cleaning runs in strict order; early passes enable later ones:
 14. `_remove_footers()` — unsubscribe sections, addresses, powered-by footers
 15. `_remove_empty_containers()` — cleanup orphaned divs/tds
 
-Public utility functions: `is_website_template()`, `truncate_html_content()`, `deduplicate_title()`
+Public utility functions: `is_website_template()`, `deduplicate_title()`
 
 ### Key thresholds (defined in `main.py`)
 
 | Constant | Value | Purpose |
 |---|---|---|
 | `MAX_PER_SENDER` | 2 | Max articles per unique sender per edition |
-| `MAX_ARTICLES` | 15 | Hard cap on articles per PDF |
-| `MAX_ARTICLE_WORDS` | 700 | Visible word limit before truncation (~3 A4 pages) |
 | min visible text | 300 chars | Articles below this are skipped entirely |
+
+**Geen artikel- of lengtebeperkingen:** nieuwsbrieven worden volledig weergegeven, zonder afkap. Er is geen maximumaantal artikelen per PDF.
 
 ### Schedule (GitHub Actions)
 
