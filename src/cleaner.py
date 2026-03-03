@@ -459,20 +459,56 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
         if not text:
             continue
 
-        # Voor korte teksten (<= 500 chars): check tegen kill-list en verwijder hele element
+        # Voor korte teksten (<= 500 chars): check tegen kill-list.
+        # Let op: als het element ook substantiële niet-kill inhoud bevat (> 80 chars
+        # aan waardevolle kinderen), verwijder dan ALLEEN de kill-matching kinderen —
+        # niet de hele container. Dit beschermt artikel-inhoud die toevallig in
+        # dezelfde div staat als boilerplate (bijv. Readwise quote + "Favorite / Share →").
         if len(text) <= 500 and _KILLLIST_PATTERN.search(text):
+            nonkill_len = sum(
+                len(c.get_text(strip=True))
+                for c in elem.children
+                if hasattr(c, 'get_text')
+                and c.get_text(strip=True)
+                and not _KILLLIST_PATTERN.search(c.get_text(strip=True))
+            )
+            if nonkill_len > 80:
+                # Container heeft waardevolle inhoud — verwijder alleen kill-kinderen
+                for child in list(elem.children):
+                    if child.parent is None:
+                        continue
+                    if hasattr(child, 'get_text'):
+                        child_text = child.get_text(strip=True)
+                        if child_text and _KILLLIST_PATTERN.search(child_text) and len(child_text) <= 500:
+                            child.decompose()
+                continue
+
             target = _find_smallest_killable_parent(elem)
             if target and target.parent is not None:
                 target.decompose()
                 continue
 
-        # Voor langere teksten: check of de EERSTE 200 chars de kill-pattern bevatten
-        # (header-rommel staat altijd bovenaan)
+        # Voor langere teksten: check EERSTE én LAATSTE 200 chars op kill-patronen.
+        # Eerste 200: header-rommel bovenaan (browser-view prompts etc.)
+        # Laatste 200: boilerplate-links onderaan (Readwise "Favorite / Discard / Tag or Share →")
         if len(text) > 500:
             first_chunk = text[:200]
+            last_chunk = text[-200:]
+
+            # Check eerste 200: probeer het eerste matchende child te verwijderen
             if _KILLLIST_PATTERN.search(first_chunk):
-                # Probeer alleen het eerste child-element te verwijderen
                 for child in list(elem.children):
+                    if child.parent is None:
+                        continue
+                    if hasattr(child, 'get_text'):
+                        child_text = child.get_text(strip=True)
+                        if child_text and _KILLLIST_PATTERN.search(child_text) and len(child_text) <= 500:
+                            child.decompose()
+                            break
+
+            # Check laatste 200: probeer het laatste matchende child te verwijderen
+            elif _KILLLIST_PATTERN.search(last_chunk):
+                for child in reversed(list(elem.children)):
                     if child.parent is None:
                         continue
                     if hasattr(child, 'get_text'):
@@ -537,8 +573,13 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
 def _find_smallest_killable_parent(elem) -> object:
     """
     Zoek het kleinste parent-element dat veilig verwijderd kan worden.
-    Climbt omhoog zolang de parent niet te groot is en hetzelfde
-    kill-list patroon bevat.
+
+    Klimt omhoog zolang de parent BIJNA UITSLUITEND kill-list inhoud bevat,
+    d.w.z. de parent voegt niet meer dan 60 chars eigen content toe.
+
+    Dit voorkomt dat een container met zowel artikel-inhoud als boilerplate
+    (bijv. een div met 150 chars inhoud + "© 2025") per ongeluk volledig
+    wordt verwijderd.
     """
     target = elem
     while target.parent and target.parent.name not in ["body", "html", "[document]"]:
@@ -546,11 +587,14 @@ def _find_smallest_killable_parent(elem) -> object:
             break
         try:
             parent_text = target.parent.get_text(strip=True)
+            target_text = target.get_text(strip=True)
         except Exception:
             break
-        # Als de parent kort genoeg is, neem die als verwijder-target
-        # Verhoogd van 200 naar 500 om grotere containers te pakken
-        if len(parent_text) < 500:
+        parent_len = len(parent_text)
+        target_len = len(target_text)
+        # Klim alleen omhoog als de parent weinig eigen content toevoegt (≤ 60 chars).
+        # Zo voorkomt men dat een artikel-wrapper met losse footer erin wordt gewist.
+        if parent_len < 500 and (parent_len - target_len) <= 60:
             target = target.parent
         else:
             break
@@ -672,12 +716,21 @@ def _remove_footers(soup: BeautifulSoup) -> None:
     """
     Verwijder footer-secties die unsubscribe links, adressen etc. bevatten.
     Zoekt van onderaf en verwijdert alles vanaf het eerste footer-marker.
+
+    Let op: alleen de ONDERSTE 40% van elementen wordt gescand. Dit voorkomt
+    dat footer-patronen (bijv. "© 2025") in de artikeltekst zelf leiden tot
+    verwijdering van de inhoud van korte artikelen.
     """
     body = soup.find("body") or soup
     all_elements = list(body.find_all(["div", "table", "tr", "td", "p", "section", "footer"]))
 
+    # Beperk zoekruimte tot de onderste 40% van elementen (min. 30).
+    # Footers staan altijd onderaan — nooit in het midden van de content.
+    bottom_count = max(30, len(all_elements) * 2 // 5)
+    candidate_elements = all_elements[-bottom_count:]
+
     footer_elements = []
-    for elem in reversed(all_elements):
+    for elem in reversed(candidate_elements):
         if elem.parent is None:
             continue
         try:

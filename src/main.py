@@ -164,6 +164,24 @@ def main():
                 )
                 continue
 
+            # Stap 2c(2): Structurele inhoudscheck — voorkomt dat alleen link-lijsten
+            # of minimale fragmenten de PDF halen als visueel lege pagina's.
+            # Eis: minstens 1 blok-element met > 60 chars ÓÓGT minstens 2 blokken met > 20 chars.
+            _blocks_60 = [
+                el for el in _check_soup.find_all(["p", "li", "h1", "h2", "h3", "blockquote", "td"])
+                if len(el.get_text(strip=True)) > 60
+            ]
+            _blocks_20 = [
+                el for el in _check_soup.find_all(["p", "li", "h1", "h2", "h3", "blockquote", "td"])
+                if len(el.get_text(strip=True)) > 20
+            ]
+            if not _blocks_60 and len(_blocks_20) < 2:
+                logger.warning(
+                    f"  ⚠️ '{subject}' mist substantiële tekstblokken "
+                    f"(blokken>60: {len(_blocks_60)}, blokken>20: {len(_blocks_20)}) — overgeslagen."
+                )
+                continue
+
             # Stap 2d: Dubbele titels verwijderen
             nl["html_content"] = deduplicate_title(nl["html_content"], subject)
 
@@ -176,6 +194,18 @@ def main():
                 logger.info(f"    Vertalen naar Nederlands...")
                 nl["html_content"] = translate_html(nl["html_content"], openai_api_key)
                 logger.info(f"    Vertaling voltooid.")
+
+                # Re-valideer na vertaling: AI kan content soms inkorten of weggooien
+                _post_soup = BeautifulSoup(nl["html_content"], "html.parser")
+                for _s in _post_soup.find_all(["style", "link"]):
+                    _s.decompose()
+                post_text = _post_soup.get_text(strip=True)
+                if len(post_text) < 200:
+                    logger.warning(
+                        f"  ⚠️ '{subject}' te weinig content na vertaling "
+                        f"({len(post_text)} tekens) — overgeslagen."
+                    )
+                    continue
 
             # Stap 3b: Trunceer te lange artikelen
             visible_words = len(
@@ -254,6 +284,21 @@ def main():
         render_pdf(full_html, pdf_path)
         file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
         logger.info(f"PDF grootte: {file_size_mb:.1f} MB")
+
+        # Valideer pagina-telling: verwacht 1 voorblad + 1 pagina per artikel (minimaal).
+        # Als de PDF significant korter is, waarschuw dan over mogelijk afgebroken rendering.
+        try:
+            from pypdf import PdfReader as _PdfReader
+            _actual = len(_PdfReader(pdf_path).pages)
+            _expected_min = len(newsletters) + 1
+            if _actual < _expected_min:
+                logger.warning(
+                    f"⚠️ PDF heeft {_actual} pagina's, maar er zijn {len(newsletters)} artikelen "
+                    f"(verwacht minimaal {_expected_min}). Mogelijk afgebroken rendering! "
+                    f"Controleer of Playwright voldoende geheugen/tijd had."
+                )
+        except Exception:
+            pass
 
         # --- Stap 6: E-mail verzenden ---
         logger.info("\n📧 Stap 6: E-mail verzenden...")

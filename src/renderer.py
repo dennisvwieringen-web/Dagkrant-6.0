@@ -293,7 +293,13 @@ def render_pdf(html_content: str, output_path: str) -> str:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
-            page.goto(f"file:///{temp_html_path}", wait_until="networkidle")
+            # Timeout op 60s: grote edities met veel externe afbeeldingen
+            # kunnen langer duren dan de Playwright-default van 30s.
+            page.goto(
+                f"file:///{temp_html_path}",
+                wait_until="networkidle",
+                timeout=60000,
+            )
             # Wacht even zodat alle afbeeldingen geladen kunnen worden
             page.wait_for_timeout(2000)
 
@@ -310,7 +316,17 @@ def render_pdf(html_content: str, output_path: str) -> str:
             )
             browser.close()
 
-        logger.info(f"PDF gegenereerd: {output_path}")
+        # Valideer het gegenereerde PDF: log een waarschuwing als het
+        # aantal pagina's veel lager is dan verwacht (rendering-crash detectie).
+        try:
+            from pypdf import PdfReader as _PdfReader
+            _reader = _PdfReader(output_path)
+            actual_pages = len(_reader.pages)
+            file_kb = os.path.getsize(output_path) / 1024
+            logger.info(f"PDF gegenereerd: {actual_pages} pagina's, {file_kb:.0f} KB → {output_path}")
+        except Exception:
+            logger.info(f"PDF gegenereerd: {output_path}")
+
         return output_path
 
     finally:
