@@ -75,7 +75,8 @@ render_cover_page() [Jinja2 → templates/cover.html]
 compose_full_html() → single HTML doc with CSS page-break logic
 render_pdf() [Playwright Chromium, headless, A4, 60s timeout]
     ↓
-send_email_with_pdf() via SMTP
+send_email_with_pdf() via SMTP → TARGET_EMAIL
+send_email_with_pdf() via SMTP → KINDLE_EMAIL (optioneel)
 ```
 
 ### Module responsibilities
@@ -133,9 +134,12 @@ Cron: `0 14 * * *`. Runs on `ubuntu-latest` with Python 3.12. Playwright Chromiu
 
 ---
 
-## Known Open Issue
+## Known Behaviour & Solved Issues
 
-**Substack-style newsletters (Cal Newport, Lenny's Newsletter) contain real content but appear empty in the PDF.** The cleaning pipeline strips their content too aggressively. These are NOT empty emails — they have article text that gets incorrectly removed. When fixing this, the challenge is that Substack emails use `display:none` preview text, `&nbsp;` layout spacers, and complex table structures that interact unpredictably with multiple cleaning passes. Any fix must preserve the real article content while still stripping the boilerplate surrounding it.
+**Substack-style newsletters (Cal Newport, Lenny's Newsletter)** have two previously solved problems worth remembering:
+
+1. **Empty content (solved):** `display:none` preview text and `&nbsp;` spacers inflated the character count past the 300-char threshold. Fixed via `_get_truly_visible_text()` which strips these before counting.
+2. **English content not translated (solved):** Substack HTML is one giant nested `<table>`. The old `_split_html()` produced a single chunk larger than GPT-4o-mini's output limit → silent fallback to English. Fixed by making `_split_html()` recursive (descends into oversized elements to find split points). `max_tokens=16000` added to prevent output truncation.
 
 ---
 
@@ -160,6 +164,8 @@ Cron: `0 14 * * *`. Runs on `ubuntu-latest` with Python 3.12. Playwright Chromiu
 **Footer removal is position-aware:** `_remove_footers()` only scans the bottom 40% of elements (min. 30). This prevents footer patterns in article body text from triggering removal. The parent-climb limit (`_find_smallest_killable_parent`) only climbs if the parent adds ≤ 60 chars.
 
 **Kill-list respects mixed containers:** `_remove_killlisted_elements()` checks whether a container also has valuable non-kill content (> 80 chars). If so, only the kill-matching children are removed, preserving article text.
+
+**HTML splitting for translation is recursive:** `_split_html()` descends into child elements when a top-level element exceeds `max_chunk_size` (12K chars). This is essential for Substack/Lenny's-style emails where the entire newsletter is wrapped in one giant nested `<table>`. Without recursion, the whole email becomes a single oversized chunk that exceeds GPT-4o-mini's output limit and silently falls back to the original English.
 
 **AI artifacts are stripped twice:** Once inside `clean_html()` before translation, and once after `translate_html()` via `strip_ai_artifacts()`. The translator (GPT-4o-mini) can introduce new code fences that the initial cleaning pass cannot anticipate.
 
