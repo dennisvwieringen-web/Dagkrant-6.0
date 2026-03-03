@@ -115,6 +115,7 @@ def translate_html(html_content: str, openai_api_key: str) -> str:
 def _translate_chunk(client: OpenAI, html_chunk: str) -> str:
     """Vertaal een enkel stuk HTML via de OpenAI API."""
     try:
+        logger.debug(f"  Vertalen chunk van {len(html_chunk)} tekens...")
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -137,38 +138,55 @@ def _translate_chunk(client: OpenAI, html_chunk: str) -> str:
                 },
             ],
             temperature=0.3,
+            max_tokens=16000,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"OpenAI vertaalfout: {e}")
+        logger.error(f"OpenAI vertaalfout ({len(html_chunk)} tekens chunk): {e}")
         return html_chunk  # Bij fout: origineel teruggeven
 
 
 def _split_html(html_content: str, max_size: int) -> list[str]:
     """
     Splits HTML in stukken van maximaal max_size tekens.
-    Probeert te splitsen op paragraaf- of div-grenzen.
+
+    Werkt recursief: als een top-level element zelf groter is dan max_size
+    (typisch bij Substack-stijl HTML met één grote geneste <table>),
+    wordt er dieper in de boom gezocht naar splitspunten.
     """
     soup = BeautifulSoup(html_content, "html.parser")
-    body = soup.find("body")
-    if not body:
-        body = soup
+    body = soup.find("body") or soup
 
-    chunks = []
-    current_chunk = ""
+    chunks: list[str] = []
+    current_chunk: str = ""
 
-    for element in body.children:
-        element_str = str(element)
-        if len(current_chunk) + len(element_str) > max_size and current_chunk:
-            chunks.append(current_chunk)
-            current_chunk = element_str
-        else:
-            current_chunk += element_str
+    def _collect(elements) -> None:
+        nonlocal current_chunk
+        for element in elements:
+            element_str = str(element)
+
+            if len(element_str) > max_size and hasattr(element, "children"):
+                # Element te groot — recursief afdalen in de kinderen
+                _collect(list(element.children))
+
+            elif len(current_chunk) + len(element_str) > max_size and current_chunk:
+                # Huidige chunk vol — sla op en begin nieuw
+                chunks.append(current_chunk)
+                current_chunk = element_str
+
+            else:
+                current_chunk += element_str
+
+    _collect(list(body.children))
 
     if current_chunk:
         chunks.append(current_chunk)
 
-    return chunks if chunks else [html_content]
+    if not chunks:
+        return [html_content]
+
+    logger.debug(f"  HTML gesplitst in {len(chunks)} chunks (max_size={max_size})")
+    return chunks
 
 
 def generate_toc_entry(
