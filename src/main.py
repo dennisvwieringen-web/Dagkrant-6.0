@@ -5,13 +5,10 @@ Dit is het hoofdscript dat alle modules aanstuurt:
 1. Nieuwsbrieven ophalen uit Gmail
 2. Taal detecteren en Engels vertalen naar Nederlands
 3. PDF genereren met voorblad en inhoudsopgave
-4. PDF e-mailen naar het werkadres
+4. PDF e-mailen naar het werkadres + Kindle
 
-Schema: ma/wo/do/vr om 16:00 CET.
-Maandag  → 72 uur terug (vr 16:00 → ma 16:00, vangt za+zo+ma op)
-Woensdag → 48 uur terug (ma 16:00 → wo 16:00, vangt di+wo op)
-Donderdag→ 24 uur terug (wo 16:00 → do 16:00)
-Vrijdag  → 24 uur terug (do 16:00 → vr 16:00)
+Schema: dagelijks om 15:00 CET (14:00 UTC).
+Elke dag → 24 uur terugkijken.
 """
 
 import logging
@@ -63,25 +60,14 @@ def _get_truly_visible_text(html: str) -> str:
     text = text.replace("\xa0", "").strip()
     return text
 
-# Printschema: hoeveel uur terugkijken per weekdag
-# 0=ma, 1=di, 2=wo, 3=do, 4=vr, 5=za, 6=zo
-_HOURS_BACK = {
-    0: 72,   # Maandag:   vr 16:00 → ma 16:00 (za + zo + ma)
-    2: 48,   # Woensdag:  ma 16:00 → wo 16:00 (di + wo)
-    3: 24,   # Donderdag: wo 16:00 → do 16:00
-    4: 24,   # Vrijdag:   do 16:00 → vr 16:00
-}
+# Dagelijks schema: altijd 24 uur terugkijken
+_HOURS_BACK = 24
 
 
 def _calculate_hours_back() -> int:
-    """
-    Bereken hoeveel uur we moeten terugkijken op basis van de huidige weekdag.
-    Fallback: 24 uur (voor handmatige runs op andere dagen).
-    """
-    weekday = datetime.now(timezone.utc).weekday()  # 0=ma ... 6=zo
-    hours = _HOURS_BACK.get(weekday, 24)
-    logger.info(f"Weekdag {weekday} → {hours} uur terugkijken")
-    return hours
+    """Retourneer het aantal uur terugkijken (altijd 24 bij dagelijks schema)."""
+    logger.info(f"{_HOURS_BACK} uur terugkijken")
+    return _HOURS_BACK
 
 
 def main():
@@ -93,6 +79,7 @@ def main():
     gmail_password = os.getenv("GMAIL_APP_PASSWORD")
     openai_api_key = os.getenv("OPENAI_API_KEY")
     target_email = os.getenv("TARGET_EMAIL")
+    kindle_email = os.getenv("KINDLE_EMAIL")  # optioneel
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
 
@@ -296,9 +283,24 @@ def main():
             smtp_port=smtp_port,
         )
 
+        recipients = [target_email]
+
+        # Kindle: stuur dezelfde PDF ook naar de Kindle-e-reader
+        if kindle_email:
+            logger.info(f"📚 Kindle: PDF verzenden naar {kindle_email}...")
+            send_email_with_pdf(
+                pdf_path=pdf_path,
+                sender_email=gmail_user,
+                sender_password=gmail_password,
+                recipient_email=kindle_email,
+                smtp_server=smtp_server,
+                smtp_port=smtp_port,
+            )
+            recipients.append(kindle_email)
+
         logger.info("\n" + "=" * 60)
         logger.info("DE DAGKRANT IS KLAAR!")
-        logger.info(f"Verzonden naar: {target_email}")
+        logger.info(f"Verzonden naar: {', '.join(recipients)}")
         logger.info("=" * 60)
 
     finally:
