@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters
 from translator import detect_language, generate_toc_entry, translate_html
-from cleaner import clean_html, deduplicate_title, is_website_template, truncate_html_content
+from cleaner import clean_html, deduplicate_title, is_website_template
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
 
 # Logging configuratie
@@ -118,21 +118,10 @@ def main():
             logger.info(f"  ⏭ Overgeslagen (max {MAX_PER_SENDER}/afzender): '{nl['subject'][:60]}'")
     newsletters = filtered_by_sender
 
-    # Limiet: maximaal 15 artikelen per PDF om overflow te voorkomen
-    MAX_ARTICLES = 15
-    if len(newsletters) > MAX_ARTICLES:
-        logger.warning(
-            f"⚠️ {len(newsletters)} artikelen gevonden, limiet is {MAX_ARTICLES}. "
-            f"Oudste {len(newsletters) - MAX_ARTICLES} worden overgeslagen."
-        )
-        newsletters = newsletters[:MAX_ARTICLES]
-
     # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
     # Elke nieuwsbrief wordt apart verwerkt. Als er iets misgaat,
     # wordt die ene nieuwsbrief overgeslagen en gaat de rest door.
     logger.info("\n🧹 Stap 2-3: Opschonen, dedupliceren, detecteren en vertalen...")
-    # Maximum zichtbare woorden per artikel (≈ 3 A4-pagina's)
-    MAX_ARTICLE_WORDS = 700
 
     processed = []
     for i, nl in enumerate(newsletters):
@@ -206,18 +195,6 @@ def main():
                         f"({len(post_text)} tekens) — overgeslagen."
                     )
                     continue
-
-            # Stap 3b: Trunceer te lange artikelen
-            visible_words = len(
-                BeautifulSoup(nl["html_content"], "html.parser")
-                .get_text(separator=" ", strip=True)
-                .split()
-            )
-            if visible_words > MAX_ARTICLE_WORDS:
-                logger.info(
-                    f"    Artikel ingekort: {visible_words} woorden → max {MAX_ARTICLE_WORDS}"
-                )
-                nl["html_content"] = truncate_html_content(nl["html_content"], MAX_ARTICLE_WORDS)
 
             processed.append(nl)
 
