@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from bs4 import BeautifulSoup
-from fetcher import fetch_newsletters
+from fetcher import fetch_newsletters, fetch_article_urls
+from web_article import fetch_article
 from translator import detect_language, generate_cover_image, generate_toc_entry, translate_html
 from cleaner import clean_html, deduplicate_title, is_website_template, strip_ai_artifacts
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
@@ -109,11 +110,20 @@ def main():
     logger.info(f"\n📬 Stap 1: Nieuwsbrieven ophalen uit Gmail (laatste {hours_back} uur)...")
     newsletters = fetch_newsletters(gmail_user, gmail_password, hours_back=hours_back)
 
-    if not newsletters:
-        logger.info(f"Geen nieuwsbrieven gevonden in de laatste {hours_back} uur. Klaar!")
-        return
-
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
+
+    # Handmatig toegevoegde webartikelen (label: Dagkrant/Lezen)
+    logger.info(f"\n🔗 Stap 1b: Handmatige artikelen ophalen (label: Dagkrant/Lezen)...")
+    article_urls = fetch_article_urls(gmail_user, gmail_password, hours_back=hours_back)
+    for url in article_urls:
+        article = fetch_article(url)
+        if article:
+            newsletters.append(article)
+            logger.info(f"  Toegevoegd: '{article['subject'][:60]}'")
+
+    if not newsletters:
+        logger.info(f"Geen nieuwsbrieven of artikelen gevonden in de laatste {hours_back} uur. Klaar!")
+        return
 
     # Sorteer op datum (nieuwste eerst)
     newsletters.sort(key=lambda x: x.get("date", ""), reverse=True)

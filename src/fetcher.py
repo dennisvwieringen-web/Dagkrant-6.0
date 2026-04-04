@@ -286,6 +286,80 @@ def fetch_newsletters(
     return newsletters
 
 
+def fetch_article_urls(
+    gmail_user: str,
+    gmail_password: str,
+    label: str = "Dagkrant/Lezen",
+    hours_back: int = 24,
+) -> list[str]:
+    """
+    Haal artikel-URLs op uit emails met het label 'Dagkrant/Lezen'.
+
+    De gebruiker stuurt zichzelf een e-mail met een URL (in het onderwerp
+    of de body) en labelt die met 'Dagkrant/Lezen'. Deze functie extraheert
+    alle gevonden URLs uit zulke emails van de afgelopen 24 uur.
+
+    Returns:
+        Lijst van unieke URLs.
+    """
+    _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
+
+    urls: list[str] = []
+    since_date = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    since_str = since_date.strftime("%d-%b-%Y")
+
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(gmail_user, gmail_password)
+    except imaplib.IMAP4.error as e:
+        logger.error(f"IMAP login mislukt voor artikel-URLs: {e}")
+        return []
+
+    try:
+        status, _ = mail.select(f'"{label}"', readonly=True)
+        if status != "OK":
+            logger.info(f"Label '{label}' niet gevonden — geen handmatige artikelen.")
+            return []
+
+        status, message_ids = mail.search(None, f'(SINCE "{since_str}")')
+        if status != "OK" or not message_ids[0]:
+            logger.info(f"Geen emails in '{label}' sinds {since_str}.")
+            return []
+
+        for msg_id in message_ids[0].split():
+            try:
+                status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                if status != "OK":
+                    continue
+
+                msg = email.message_from_bytes(msg_data[0][1])
+
+                # Zoek URLs in onderwerp én body
+                search_text = msg.get("Subject", "") + "\n"
+                plain = _extract_plain_body(msg)
+                if plain:
+                    search_text += plain
+                else:
+                    html = _extract_html_body(msg)
+                    if html:
+                        from bs4 import BeautifulSoup as _BS
+                        search_text += _BS(html, "html.parser").get_text()
+
+                for url in _URL_RE.findall(search_text):
+                    if url not in urls:
+                        logger.info(f"  Artikel-URL gevonden: {url}")
+                        urls.append(url)
+
+            except Exception as e:
+                logger.error(f"Fout bij verwerken artikel-email {msg_id}: {e}")
+                continue
+
+    finally:
+        mail.logout()
+
+    return urls
+
+
 def _deduplicate_newsletters(newsletters: list[dict]) -> list[dict]:
     """
     Verwijder duplicaten op basis van subject-overeenkomst (>90%).
