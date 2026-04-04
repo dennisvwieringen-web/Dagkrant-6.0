@@ -131,9 +131,10 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
             page-break-before: always;
         }}
 
-        /* Neutraliseer linkkleur voor print — blauw ziet er uit als een webpagina */
+        /* Links: donkere kleur voor print, maar wel zichtbaar als link */
         a {{
-            color: #333 !important;
+            color: #1a365d !important;
+            text-decoration: underline;
         }}
 
         .newsletter-header {{
