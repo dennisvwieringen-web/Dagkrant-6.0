@@ -269,6 +269,52 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
 </html>"""
 
 
+def _embed_cover_thumbnail(pdf_path: str, screenshot_png: bytes) -> None:
+    """
+    Embed een miniatuurafbeelding van het voorblad als /Thumb in de eerste PDF-pagina.
+    Kindle gebruikt dit als bibliotheekafbeelding.
+    """
+    try:
+        import io
+        from PIL import Image
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.generic import DecodedStreamObject, NameObject, NumberObject
+
+        # Schaal naar Kindle-thumbnailformaat
+        img = Image.open(io.BytesIO(screenshot_png)).convert("RGB")
+        img.thumbnail((256, 362), Image.LANCZOS)
+        w, h = img.size
+
+        # Raw RGB-pixeldata; pypdf schrijft dit als ongecomprimeerde stream
+        raw_bytes = img.tobytes()
+
+        reader = PdfReader(pdf_path)
+        writer = PdfWriter()
+        writer.append(reader)
+        writer.add_metadata({"/Title": "De Dagkrant"})
+
+        # Image XObject voor de thumbnail
+        thumb = DecodedStreamObject()
+        thumb.update({
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Image"),
+            NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
+            NameObject("/BitsPerComponent"): NumberObject(8),
+            NameObject("/Width"): NumberObject(w),
+            NameObject("/Height"): NumberObject(h),
+        })
+        thumb.set_data(raw_bytes)
+
+        writer.pages[0][NameObject("/Thumb")] = writer._add_object(thumb)
+
+        with open(pdf_path, "wb") as f:
+            writer.write(f)
+
+        logger.info(f"Kindle-thumbnail ingebed ({w}×{h}px)")
+    except Exception as e:
+        logger.warning(f"Kindle-thumbnail niet ingebed: {e}")
+
+
 def render_pdf(html_content: str, output_path: str) -> str:
     """
     Render HTML naar PDF met Playwright (Chromium).
@@ -304,6 +350,9 @@ def render_pdf(html_content: str, output_path: str) -> str:
             # Wacht even zodat alle afbeeldingen geladen kunnen worden
             page.wait_for_timeout(2000)
 
+            # Screenshot van voorblad voor Kindle-bibliotheekthumbnail (A4-breedte viewport)
+            cover_screenshot = page.screenshot(clip={"x": 0, "y": 0, "width": 794, "height": 1123})
+
             page.pdf(
                 path=output_path,
                 format="A4",
@@ -316,6 +365,8 @@ def render_pdf(html_content: str, output_path: str) -> str:
                 print_background=True,
             )
             browser.close()
+
+        _embed_cover_thumbnail(output_path, cover_screenshot)
 
         # Valideer het gegenereerde PDF: log een waarschuwing als het
         # aantal pagina's veel lager is dan verwacht (rendering-crash detectie).
