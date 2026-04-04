@@ -251,3 +251,44 @@ def generate_toc_entry(
     except Exception as e:
         logger.error(f"Fout bij genereren TOC entry: {e}")
         return {"short_title": subject, "description": ""}
+
+
+def generate_cover_image(toc_entries: list[dict], openai_api_key: str) -> str | None:
+    """
+    Genereer een illustratie voor het voorblad via DALL-E 3, gebaseerd op de
+    thema's van die dag.
+
+    Args:
+        toc_entries: Lijst van TOC-dicts met 'short_title' per artikel.
+        openai_api_key: OpenAI API-sleutel.
+
+    Returns:
+        Base64-gecodeerde PNG-string (voor gebruik als data-URI), of None bij een fout.
+    """
+    client = OpenAI(api_key=openai_api_key)
+
+    themes = [e.get("short_title", "") for e in toc_entries[:6] if e.get("short_title")]
+    themes_text = "; ".join(themes)
+
+    prompt = (
+        f"A classic Dutch newspaper front page editorial illustration. "
+        f"Today's main themes: {themes_text}. "
+        "Style: vintage newspaper woodcut engraving, dramatic editorial art, "
+        "black and white with subtle sepia tones, no text, no headlines, "
+        "compositionally balanced, suitable as a newspaper cover illustration."
+    )
+
+    try:
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1792x1024",
+            quality="standard",
+            response_format="b64_json",
+            n=1,
+        )
+        logger.info("Cover-illustratie gegenereerd via DALL-E 3.")
+        return response.data[0].b64_json
+    except Exception as e:
+        logger.error(f"Fout bij genereren cover-illustratie: {e}")
+        return None

@@ -53,13 +53,18 @@ def _get_edition_number() -> int:
     return (now - start_date).days + 1
 
 
-def render_cover_page(newsletters: list[dict], toc_entries: list[dict]) -> str:
+def render_cover_page(
+    newsletters: list[dict],
+    toc_entries: list[dict],
+    cover_image_b64: str | None = None,
+) -> str:
     """
     Render het voorblad + inhoudsopgave als HTML.
 
     Args:
         newsletters: Lijst van nieuwsbrief-dicts.
         toc_entries: Lijst van dicts met 'subject', 'sender', 'description'.
+        cover_image_b64: Optionele base64-PNG van de DALL-E cover-illustratie.
 
     Returns:
         HTML-string van het voorblad.
@@ -73,6 +78,7 @@ def render_cover_page(newsletters: list[dict], toc_entries: list[dict]) -> str:
         edition_number=_get_edition_number(),
         newsletter_count=len(newsletters),
         toc_entries=toc_entries,
+        cover_image=cover_image_b64,
     )
 
 
