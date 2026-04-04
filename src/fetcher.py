@@ -289,7 +289,7 @@ def fetch_newsletters(
 def fetch_article_urls(
     gmail_user: str,
     gmail_password: str,
-    label: str = "Dagkrant/Lezen",
+    label: str = "Nieuwsbrieven/Extra artikelen",
     hours_back: int = 24,
 ) -> list[str]:
     """
