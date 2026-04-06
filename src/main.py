@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters, fetch_article_urls
 from web_article import fetch_article
-from translator import detect_language, generate_cover_image, generate_toc_entry, translate_html
+from translator import detect_language, generate_toc_entry, translate_html
 from cleaner import clean_html, deduplicate_title, is_website_template, strip_ai_artifacts
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
 
@@ -253,13 +253,9 @@ def main():
                 "was_translated": nl.get("was_translated", False),
             })
 
-    # --- Stap 4b: Cover-illustratie genereren ---
-    logger.info("\n🎨 Stap 4b: Cover-illustratie genereren via DALL-E 3...")
-    cover_image_b64 = generate_cover_image(toc_entries, openai_api_key)
-
     # --- Stap 5: PDF samenstellen ---
     logger.info("\n📄 Stap 5: PDF genereren...")
-    cover_html = render_cover_page(newsletters, toc_entries, cover_image_b64=cover_image_b64)
+    cover_html = render_cover_page(newsletters, toc_entries)
     full_html = compose_full_html(cover_html, newsletters)
 
     # PDF opslaan in een tijdelijk bestand
