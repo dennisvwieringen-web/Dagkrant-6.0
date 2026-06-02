@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dagkrant Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Special+Elite&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js"></script>
+  <style>
+    :root {
+      --sepia-50:  #faf6f0;
+      --sepia-100: #f3ece0;
+      --sepia-200: #e8dcc8;
+      --sepia-300: #d4c0a0;
+      --sepia-400: #b89970;
+      --sepia-500: #9a7a52;
+      --sepia-600: #7d6040;
+      --sepia-700: #604830;
+      --sepia-800: #443320;
+      --sepia-900: #2a1f10;
+      --accent-warm: #c4956a;
+      --accent-gold: #d4a853;
+      --radius-card: 16px;
+      --radius-input: 10px;
+      --radius-btn:   10px;
+      --shadow: 0 2px 12px rgba(42,31,16,0.08);
+      --shadow-hover: 0 4px 20px rgba(42,31,16,0.14);
+      --font: 'Special Elite', cursive;
+      --transition: 0.18s ease;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font);
+      background: var(--sepia-100);
+      color: var(--sepia-900);
+      min-height: 100vh;
+      padding: 36px 24px 60px;
+    }
+
+    /* ── Header ── */
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .header-inner {
+      display: inline-block;
+      background: var(--sepia-50);
+      border: 1px solid var(--sepia-200);
+      border-radius: 20px;
+      padding: 20px 40px 16px;
+      box-shadow: var(--shadow);
+    }
+
+    header h1 {
+      font-size: 2rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--sepia-900);
+      line-height: 1;
+    }
+
+    header p {
+      margin-top: 6px;
+      font-size: 0.78rem;
+      color: var(--sepia-500);
+      letter-spacing: 0.06em;
+    }
+
+    /* ── Grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+
+    /* ── Card ── */
+    .card {
+      background: var(--sepia-50);
+      border: 1px solid var(--sepia-200);
+      border-radius: var(--radius-card);
+      padding: 22px 22px 20px;
+      box-shadow: var(--shadow);
+      transition: box-shadow var(--transition);
+    }
+
+    .card:hover { box-shadow: var(--shadow-hover); }
+    .card.full { grid-column: 1 / -1; }
+    .card.token-card { background: #fffbf2; border-color: var(--accent-gold); }
+
+    .card-title {
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent-warm);
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .card-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--sepia-200);
+    }
+
+    /* ── Labels & inputs ── */
+    label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--sepia-600);
+      margin-bottom: 5px;
+      letter-spacing: 0.04em;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    input[type="time"] {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1.5px solid var(--sepia-200);
+      border-radius: var(--radius-input);
+      font-size: 0.88rem;
+      font-family: var(--font);
+      background: var(--sepia-50);
+      color: var(--sepia-900);
+      margin-bottom: 14px;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    input:focus {
+      outline: none;
+      border-color: var(--accent-warm);
+      box-shadow: 0 0 0 3px rgba(196,149,106,0.15);
+    }
+
+    input:disabled { opacity: 0.45; }
+
+    .hint {
+      font-size: 0.72rem;
+      color: var(--sepia-400);
+      margin-top: -10px;
+      margin-bottom: 14px;
+      line-height: 1.5;
+    }
+
+    .hint strong { color: var(--sepia-600); }
+
+    /* ── Days ── */
+    .days-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+
+    .day-btn {
+      flex: 1;
+      padding: 8px 0;
+      border: 1.5px solid var(--sepia-200);
+      border-radius: 10px;
+      background: var(--sepia-50);
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 0.75rem;
+      text-align: center;
+      color: var(--sepia-500);
+      transition: all var(--transition);
+      user-select: none;
+    }
+
+    .day-btn:hover { border-color: var(--accent-warm); color: var(--accent-warm); }
+
+    .day-btn.active {
+      background: var(--accent-warm);
+      border-color: var(--accent-warm);
+      color: #fff;
+    }
+
+    .current-schedule {
+      font-size: 0.72rem;
+      color: var(--sepia-400);
+      font-style: italic;
+      margin-bottom: 14px;
+    }
+
+    /* ── Toggle ── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .toggle-label { font-size: 0.88rem; color: var(--sepia-700); }
+
+    .toggle {
+      position: relative;
+      width: 42px;
+      height: 23px;
+      flex-shrink: 0;
+    }
+
+    .toggle input { opacity: 0; width: 0; height: 0; }
+
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: var(--sepia-300);
+      border-radius: 23px;
+      cursor: pointer;
+      transition: background var(--transition);
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 17px; height: 17px;
+      left: 3px; top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform var(--transition);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+    }
+
+    .toggle input:checked + .toggle-slider { background: var(--accent-warm); }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(19px); }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 9px 18px;
+      border: none;
+      border-radius: var(--radius-btn);
+      font-size: 0.82rem;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: opacity var(--transition), transform var(--transition);
+      letter-spacing: 0.04em;
+    }
+
+    .btn:hover { opacity: 0.88; transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.38; cursor: not-allowed; transform: none; }
+
+    .btn-primary {
+      background: var(--accent-warm);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(196,149,106,0.35);
+    }
+
+    .btn-secondary {
+      background: var(--sepia-200);
+      color: var(--sepia-700);
+    }
+
+    .btn-run {
+      background: var(--sepia-800);
+      color: var(--sepia-50);
+      width: 100%;
+      padding: 13px;
+      font-size: 0.9rem;
+      letter-spacing: 0.08em;
+      box-shadow: 0 2px 10px rgba(42,31,16,0.2);
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    /* ── Status ── */
+    .status {
+      margin-top: 12px;
+      padding: 9px 13px;
+      border-radius: 10px;
+      font-size: 0.78rem;
+      display: none;
+      line-height: 1.5;
+    }
+
+    .status.success { background: #e8f4e8; color: #2d6e2d; display: block; }
+    .status.error   { background: #fbe8e8; color: #8b2020; display: block; }
+    .status.loading { background: #fdf3e0; color: #7a5c1a; display: block; }
+
+    .secret-note {
+      font-size: 0.7rem;
+      color: var(--sepia-400);
+      margin-top: -10px;
+      margin-bottom: 14px;
+    }
+
+    /* ── Run card ── */
+    .run-description {
+      font-size: 0.82rem;
+      color: var(--sepia-500);
+      margin-bottom: 18px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <h1>De Dagkrant</h1>
+    <p>Beheer dashboard &nbsp;·&nbsp; planning &amp; instellingen</p>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- Token -->
+  <div class="card full token-card">
+    <div class="card-title">GitHub verbinding</div>
+    <label for="pat">Personal Access Token</label>
+    <input type="password" id="pat" placeholder="github_pat_xxxxxxxxxxxxxxxxxxxx">
+    <p class="hint">
+      Maak aan via <strong>github.com → Settings → Developer settings → Fine-grained tokens</strong>.
+      Geef rechten: <strong>Contents</strong>, <strong>Secrets</strong> en <strong>Actions</strong> — alles Read &amp; Write.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveToken()">Verbinden</button>
+      <button class="btn btn-secondary" onclick="clearToken()">Wissen</button>
+    </div>
+    <div id="token-status" class="status"></div>
+  </div>
+
+  <!-- Planning -->
+  <div class="card">
+    <div class="card-title">Planning</div>
+    <div id="current-schedule" class="current-schedule">Laden…</div>
+
+    <label>Dagen</label>
+    <div class="days-row">
+      <div class="day-btn" data-day="1" onclick="toggleDay(this)">Ma</div>
+      <div class="day-btn" data-day="2" onclick="toggleDay(this)">Di</div>
+      <div class="day-btn" data-day="3" onclick="toggleDay(this)">Wo</div>
+      <div class="day-btn" data-day="4" onclick="toggleDay(this)">Do</div>
+      <div class="day-btn" data-day="5" onclick="toggleDay(this)">Vr</div>
+      <div class="day-btn" data-day="6" onclick="toggleDay(this)">Za</div>
+      <div class="day-btn" data-day="0" onclick="toggleDay(this)">Zo</div>
+    </div>
+
+    <label for="send-time">Verzendtijd (lokaal, CEST = UTC+2)</label>
+    <input type="time" id="send-time" value="16:00">
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveSchedule()">Opslaan</button>
+    </div>
+    <div id="schedule-status" class="status"></div>
+  </div>
+
+  <!-- Ontvangers -->
+  <div class="card">
+    <div class="card-title">Ontvangers</div>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Dagkrant e-mail</span>
+      <label class="toggle">
+        <input type="checkbox" id="target-toggle" checked onchange="toggleTarget(this)">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <label for="target-email">E-mailadres</label>
+    <input type="text" id="target-email" placeholder="naam@domein.nl">
+    <p class="secret-note">Wijzigt TARGET_EMAIL in GitHub Secrets</p>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Kindle</span>
+      <label class="toggle">
+        <input type="checkbox" id="kindle-toggle" onchange="toggleKindle(this)">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <div id="kindle-email-wrapper" style="display:none">
+      <label for="kindle-email">Kindle e-mailadres</label>
+      <input type="text" id="kindle-email" placeholder="naam@kindle.com">
+      <p class="secret-note">Wijzigt KINDLE_EMAIL in GitHub Secrets</p>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveRecipients()">Opslaan</button>
+    </div>
+    <div id="recipients-status" class="status"></div>
+  </div>
+
+  <!-- Limieten -->
+  <div class="card">
+    <div class="card-title">Limieten</div>
+
+    <label for="max-per-sender">Max artikelen per afzender</label>
+    <input type="number" id="max-per-sender" min="1" max="10" value="3">
+
+    <label for="min-chars">Minimale tekens na opschonen</label>
+    <input type="number" id="min-chars" min="50" max="1000" value="300">
+
+    <label for="min-final">Minimale tekens na vertaling (vangnet)</label>
+    <input type="number" id="min-final" min="20" max="500" value="100">
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveLimits()">Opslaan</button>
+    </div>
+    <div id="limits-status" class="status"></div>
+  </div>
+
+  <!-- Handmatig starten -->
+  <div class="card">
+    <div class="card-title">Handmatig starten</div>
+    <p class="run-description">Start direct een nieuwe run, los van het vaste schema. De dagkrant wordt gegenereerd en verstuurd.</p>
+    <button class="btn btn-run" onclick="triggerRun()">▶&nbsp; Dagkrant nu genereren</button>
+    <div id="run-status" class="status"></div>
+  </div>
+
+</div>
+
+<script>
+  const OWNER = 'dennisvwieringen-web';
+  const REPO  = 'Dagkrant-6.0';
+  const WORKFLOW_FILE = '.github/workflows/dagkrant.yml';
+  const MAIN_FILE     = 'src/main.py';
+
+  function getToken() { return localStorage.getItem('dagkrant_pat') || ''; }
+
+  function saveToken() {
+    const t = document.getElementById('pat').value.trim();
+    if (!t) return showStatus('token-status', 'error', 'Vul een token in.');
+    localStorage.setItem('dagkrant_pat', t);
+    document.getElementById('pat').value = '••••••••••••••••••••';
+    showStatus('token-status', 'loading', 'Verbinding testen…');
+    apiGet(`https://api.github.com/repos/${OWNER}/${REPO}`)
+      .then(() => { showStatus('token-status', 'success', 'Verbonden! Instellingen worden geladen…'); loadAll(); })
+      .catch(() => showStatus('token-status', 'error', 'Token ongeldig of onvoldoende rechten.'));
+  }
+
+  function clearToken() {
+    localStorage.removeItem('dagkrant_pat');
+    document.getElementById('pat').value = '';
+    showStatus('token-status', 'success', 'Token verwijderd.');
+  }
+
+  async function apiGet(url) {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }
+
+  async function apiPut(url, body) {
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.message || r.status); }
+    return r.json();
+  }
+
+  async function apiPost(url, body) {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.message || r.status); }
+    return r.status === 204 ? null : r.json();
+  }
+
+  async function getFile(path) {
+    const data = await apiGet(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`);
+    return { content: atob(data.content.replace(/\n/g, '')), sha: data.sha };
+  }
+
+  async function putFile(path, content, sha, message) {
+    await apiPut(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`, {
+      message, content: btoa(unescape(encodeURIComponent(content))), sha
+    });
+  }
+
+  async function setSecret(name, value) {
+    const keyData = await apiGet(`https://api.github.com/repos/${OWNER}/${REPO}/actions/secrets/public-key`);
+    const keyBytes = Uint8Array.from(atob(keyData.key), c => c.charCodeAt(0));
+    const msgBytes = new TextEncoder().encode(value);
+    const encrypted = sealBox(msgBytes, keyBytes);
+    const encBase64 = btoa(String.fromCharCode(...encrypted));
+    await apiPut(`https://api.github.com/repos/${OWNER}/${REPO}/actions/secrets/${name}`, {
+      encrypted_value: encBase64, key_id: keyData.key_id
+    });
+  }
+
+  function sealBox(msg, recipientPublicKey) {
+    const ephemeral = nacl.box.keyPair();
+    const nonce = new Uint8Array(nacl.box.nonceLength);
+    const nonceInput = new Uint8Array(ephemeral.publicKey.length + recipientPublicKey.length);
+    nonceInput.set(ephemeral.publicKey);
+    nonceInput.set(recipientPublicKey, ephemeral.publicKey.length);
+    for (let i = 0; i < 24; i++) nonce[i] = nonceInput[i] ^ nonceInput[i + 24] ^ nonceInput[i + 48];
+    const box = nacl.box(msg, nonce, recipientPublicKey, ephemeral.secretKey);
+    const result = new Uint8Array(ephemeral.publicKey.length + box.length);
+    result.set(ephemeral.publicKey);
+    result.set(box, ephemeral.publicKey.length);
+    return result;
+  }
+
+  async function loadAll() {
+    if (!getToken()) return;
+    await Promise.all([loadSchedule(), loadLimits()]);
+  }
+
+  async function loadSchedule() {
+    try {
+      const { content } = await getFile(WORKFLOW_FILE);
+      const cronMatch = content.match(/cron:\s*'([^']+)'/);
+      if (!cronMatch) return;
+      const parts = cronMatch[1].split(' ');
+      const utcH = parseInt(parts[1]), utcM = parseInt(parts[0]);
+      const localH = (utcH + 2) % 24;
+      document.getElementById('send-time').value = `${String(localH).padStart(2,'0')}:${String(utcM).padStart(2,'0')}`;
+      const activeDays = parts[4] === '*' ? ['0','1','2','3','4','5','6'] : parts[4].split(',');
+      document.querySelectorAll('.day-btn').forEach(b => b.classList.toggle('active', activeDays.includes(b.dataset.day)));
+      const names = { '0':'zo','1':'ma','2':'di','3':'wo','4':'do','5':'vr','6':'za' };
+      document.getElementById('current-schedule').textContent =
+        `Huidig: ${activeDays.map(d => names[d]).join(', ')} om ${String(localH).padStart(2,'0')}:${String(utcM).padStart(2,'0')}`;
+    } catch { document.getElementById('current-schedule').textContent = 'Schema kon niet worden geladen.'; }
+  }
+
+  async function loadLimits() {
+    try {
+      const { content } = await getFile(MAIN_FILE);
+      const m1 = content.match(/MAX_PER_SENDER\s*=\s*(\d+)/);
+      const m2 = content.match(/if len\(visible_text\) < (\d+)/);
+      const m3 = content.match(/if len\(final_visible\) < (\d+)/);
+      if (m1) document.getElementById('max-per-sender').value = m1[1];
+      if (m2) document.getElementById('min-chars').value = m2[1];
+      if (m3) document.getElementById('min-final').value = m3[1];
+    } catch { /* silent */ }
+  }
+
+  function toggleDay(el) { el.classList.toggle('active'); }
+
+  async function saveSchedule() {
+    showStatus('schedule-status', 'loading', 'Opslaan…');
+    try {
+      const active = [...document.querySelectorAll('.day-btn.active')].map(b => b.dataset.day);
+      if (!active.length) return showStatus('schedule-status', 'error', 'Selecteer minimaal één dag.');
+      const [lh, lm] = document.getElementById('send-time').value.split(':').map(Number);
+      const utcH = (lh - 2 + 24) % 24;
+      const newCron = `${lm} ${utcH} * * ${active.sort((a,b)=>a-b).join(',')}`;
+      const { content, sha } = await getFile(WORKFLOW_FILE);
+      const updated = content.replace(/cron:\s*'[^']+'/, `cron: '${newCron}'`);
+      if (updated === content) return showStatus('schedule-status', 'error', 'Cron-regel niet gevonden.');
+      await putFile(WORKFLOW_FILE, updated, sha, `config: planning → ${newCron}`);
+      const names = { '0':'zo','1':'ma','2':'di','3':'wo','4':'do','5':'vr','6':'za' };
+      document.getElementById('current-schedule').textContent =
+        `Huidig: ${active.map(d => names[d]).join(', ')} om ${String(lh).padStart(2,'0')}:${String(lm).padStart(2,'0')}`;
+      showStatus('schedule-status', 'success', 'Planning opgeslagen!');
+    } catch(e) { showStatus('schedule-status', 'error', `Fout: ${e.message}`); }
+  }
+
+  function toggleKindle(cb) {
+    document.getElementById('kindle-email-wrapper').style.display = cb.checked ? 'block' : 'none';
+  }
+
+  function toggleTarget(cb) {
+    document.getElementById('target-email').disabled = !cb.checked;
+  }
+
+  async function saveRecipients() {
+    showStatus('recipients-status', 'loading', 'Secrets updaten…');
+    try {
+      const targetOn = document.getElementById('target-toggle').checked;
+      const targetVal = document.getElementById('target-email').value.trim();
+      const kindleOn = document.getElementById('kindle-toggle').checked;
+      const kindleVal = document.getElementById('kindle-email').value.trim();
+      if (targetOn && targetVal) await setSecret('TARGET_EMAIL', targetVal);
+      if (kindleOn && kindleVal) await setSecret('KINDLE_EMAIL', kindleVal);
+      else if (!kindleOn) await setSecret('KINDLE_EMAIL', '');
+      showStatus('recipients-status', 'success', 'Ontvangers opgeslagen!');
+    } catch(e) { showStatus('recipients-status', 'error', `Fout: ${e.message}`); }
+  }
+
+  async function saveLimits() {
+    showStatus('limits-status', 'loading', 'Opslaan…');
+    try {
+      const max = parseInt(document.getElementById('max-per-sender').value);
+      const min = parseInt(document.getElementById('min-chars').value);
+      const fin = parseInt(document.getElementById('min-final').value);
+      const { content, sha } = await getFile(MAIN_FILE);
+      const updated = content
+        .replace(/MAX_PER_SENDER\s*=\s*\d+/, `MAX_PER_SENDER = ${max}`)
+        .replace(/(if len\(visible_text\) < )\d+/, `$1${min}`)
+        .replace(/(if len\(final_visible\) < )\d+/, `$1${fin}`);
+      await putFile(MAIN_FILE, updated, sha, `config: limieten → max=${max}, min=${min}, final=${fin}`);
+      showStatus('limits-status', 'success', 'Limieten opgeslagen!');
+    } catch(e) { showStatus('limits-status', 'error', `Fout: ${e.message}`); }
+  }
+
+  async function triggerRun() {
+    showStatus('run-status', 'loading', 'Run starten…');
+    try {
+      await apiPost(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/dagkrant.yml/dispatches`, { ref: 'main' });
+      showStatus('run-status', 'success', 'Run gestart! Bekijk de voortgang in GitHub Actions.');
+    } catch(e) { showStatus('run-status', 'error', `Fout: ${e.message}`); }
+  }
+
+  function showStatus(id, type, msg) {
+    const el = document.getElementById(id);
+    el.className = `status ${type}`;
+    el.textContent = msg;
+  }
+
+  window.addEventListener('load', () => {
+    if (getToken()) { document.getElementById('pat').value = '••••••••••••••••••••'; loadAll(); }
+  });
+</script>
+</body>
+</html>
