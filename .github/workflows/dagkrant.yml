@@ -2,10 +2,9 @@ name: De Dagkrant - Nieuwsbundel
 
 on:
   schedule:
-    # Dagelijks om 14:00 UTC
-    #   Wintertijd (CET, UTC+1): 15:00 CET → bezorging ~15:20–15:40 CET
-    #   Zomertijd  (CEST, UTC+2): 16:00 CEST → bezorging ~16:20–16:40 CEST
-    - cron: '0 14 * * *'
+    # Maandag, woensdag, donderdag, vrijdag om 16:00 CEST (zomertijd, UTC+2) = 14:00 UTC
+    # Wintertijd (CET, UTC+1): 14:00 UTC = 15:00 CET — pas dan aan naar '0 15 * * 1,3,4,5'
+    - cron: '0 14 * * 1,3,4,5'
   workflow_dispatch:  # Handmatige trigger mogelijk
 
 jobs:
