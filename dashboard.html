@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dagkrant Dashboard</title>
   <link href="https://fonts.googleapis.com/css2?family=Special+Elite&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js">
   <style>
     :root {
       --sepia-50:  #faf6f0;
@@ -367,36 +367,21 @@
   <div class="card">
     <div class="card-title">Ontvangers</div>
 
-    <div class="toggle-row">
-      <span class="toggle-label">Dagkrant e-mail</span>
-      <label class="toggle">
-        <input type="checkbox" id="target-toggle" checked onchange="toggleTarget(this)">
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
+    <p style="font-size: 0.82rem; color: var(--sepia-500); margin-bottom: 16px; line-height: 1.6;">
+      Secrets moeten handmatig in GitHub worden ingesteld. Ga naar <strong>Settings → Secrets and variables → Actions</strong>.
+    </p>
 
-    <label for="target-email">E-mailadres</label>
-    <input type="text" id="target-email" placeholder="naam@domein.nl">
-    <p class="secret-note">Wijzigt TARGET_EMAIL in GitHub Secrets</p>
+    <label for="target-email">TARGET_EMAIL</label>
+    <input type="text" id="target-email" placeholder="wgn@fioretti.nl" readonly style="background: var(--sepia-100); cursor: not-allowed;">
+    <p class="secret-note">Kopieer deze waarde naar GitHub Secret: TARGET_EMAIL</p>
 
-    <div class="toggle-row">
-      <span class="toggle-label">Kindle</span>
-      <label class="toggle">
-        <input type="checkbox" id="kindle-toggle" onchange="toggleKindle(this)">
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
+    <label for="kindle-email">KINDLE_EMAIL (optioneel)</label>
+    <input type="text" id="kindle-email" placeholder="(leeg om uit te schakelen)" readonly style="background: var(--sepia-100); cursor: not-allowed;">
+    <p class="secret-note">Kopieer naar GitHub Secret als je Kindle wilt gebruiken. Leeg = uitgeschakeld</p>
 
-    <div id="kindle-email-wrapper" style="display:none">
-      <label for="kindle-email">Kindle e-mailadres</label>
-      <input type="text" id="kindle-email" placeholder="naam@kindle.com">
-      <p class="secret-note">Wijzigt KINDLE_EMAIL in GitHub Secrets</p>
-    </div>
-
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="saveRecipients()">Opslaan</button>
-    </div>
-    <div id="recipients-status" class="status"></div>
+    <a href="https://github.com/dennisvwieringen-web/Dagkrant-6.0/settings/secrets/actions" target="_blank" class="btn btn-primary" style="width: 100%; text-decoration: none;">
+      → GitHub Secrets openen
+    </a>
   </div>
 
   <!-- Limieten -->
@@ -490,30 +475,6 @@
     });
   }
 
-  async function setSecret(name, value) {
-    const keyData = await apiGet(`https://api.github.com/repos/${OWNER}/${REPO}/actions/secrets/public-key`);
-    const keyBytes = Uint8Array.from(atob(keyData.key), c => c.charCodeAt(0));
-    const msgBytes = new TextEncoder().encode(value);
-    const encrypted = sealBox(msgBytes, keyBytes);
-    const encBase64 = btoa(String.fromCharCode(...encrypted));
-    await apiPut(`https://api.github.com/repos/${OWNER}/${REPO}/actions/secrets/${name}`, {
-      encrypted_value: encBase64, key_id: keyData.key_id
-    });
-  }
-
-  function sealBox(msg, recipientPublicKey) {
-    const ephemeral = nacl.box.keyPair();
-    const nonce = new Uint8Array(nacl.box.nonceLength);
-    const nonceInput = new Uint8Array(ephemeral.publicKey.length + recipientPublicKey.length);
-    nonceInput.set(ephemeral.publicKey);
-    nonceInput.set(recipientPublicKey, ephemeral.publicKey.length);
-    for (let i = 0; i < 24; i++) nonce[i] = nonceInput[i] ^ nonceInput[i + 24] ^ nonceInput[i + 48];
-    const box = nacl.box(msg, nonce, recipientPublicKey, ephemeral.secretKey);
-    const result = new Uint8Array(ephemeral.publicKey.length + box.length);
-    result.set(ephemeral.publicKey);
-    result.set(box, ephemeral.publicKey.length);
-    return result;
-  }
 
   async function loadAll() {
     if (!getToken()) return;
@@ -570,27 +531,6 @@
     } catch(e) { showStatus('schedule-status', 'error', `Fout: ${e.message}`); }
   }
 
-  function toggleKindle(cb) {
-    document.getElementById('kindle-email-wrapper').style.display = cb.checked ? 'block' : 'none';
-  }
-
-  function toggleTarget(cb) {
-    document.getElementById('target-email').disabled = !cb.checked;
-  }
-
-  async function saveRecipients() {
-    showStatus('recipients-status', 'loading', 'Secrets updaten…');
-    try {
-      const targetOn = document.getElementById('target-toggle').checked;
-      const targetVal = document.getElementById('target-email').value.trim();
-      const kindleOn = document.getElementById('kindle-toggle').checked;
-      const kindleVal = document.getElementById('kindle-email').value.trim();
-      if (targetOn && targetVal) await setSecret('TARGET_EMAIL', targetVal);
-      if (kindleOn && kindleVal) await setSecret('KINDLE_EMAIL', kindleVal);
-      else if (!kindleOn) await setSecret('KINDLE_EMAIL', '');
-      showStatus('recipients-status', 'success', 'Ontvangers opgeslagen!');
-    } catch(e) { showStatus('recipients-status', 'error', `Fout: ${e.message}`); }
-  }
 
   async function saveLimits() {
     showStatus('limits-status', 'loading', 'Opslaan…');
