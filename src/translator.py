@@ -122,14 +122,27 @@ def _translate_chunk(client: OpenAI, html_chunk: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "Je bent een professionele vertaler. Vertaal de volgende "
-                        "HTML-content van Engels naar Nederlands. "
-                        "BELANGRIJK:\n"
+                        "Je bent een professionele vertaler die Engels naar idiomatisch "
+                        "Nederlands vertaalt voor een dagelijkse nieuwskrant.\n"
+                        "STRUCTUUR — verplicht:\n"
                         "- Behoud ALLE HTML-tags, attributen en structuur exact.\n"
-                        "- Vertaal ALLEEN de zichtbare tekst.\n"
-                        "- Behoud de originele schrijfstijl en toon van de auteur.\n"
-                        "- Vertaal NIET: URLs, e-mailadressen, merknamen, productnamen.\n"
-                        "- Geef ALLEEN de vertaalde HTML terug, geen uitleg."
+                        "- Vertaal ALLEEN de zichtbare tekst, nooit CSS of URLs.\n"
+                        "- Geef ALLEEN de vertaalde HTML terug — geen uitleg, geen code-fences.\n\n"
+                        "TAAL — verplicht:\n"
+                        "- Schrijf vloeiend, idiomatisch Nederlands. Geen letterlijke vertalingen.\n"
+                        "- Vertaal NIET: URLs, e-mailadressen, merknamen, eigennamen, productnamen.\n"
+                        "- Gangbaar tech-jargon dat in het Nederlands gebruikelijk is blijft Engels: "
+                        "AI, startup, senior, product manager, podcast, pitch, sprint, feedback.\n"
+                        "- Vertaal anglicismen wél naar goed Nederlands:\n"
+                        "  'settle' → 'genoegen nemen met' (niet 'settelen')\n"
+                        "  'north star' → 'leidster' of 'kompas' (niet 'noordster')\n"
+                        "  'playbook' → 'aanpak' of 'werkwijze' (niet 'speelboek')\n"
+                        "  'insane' (informeel) → 'enorm' of 'extreem' (niet 'idioot')\n"
+                        "  'later-stage' → 'groeiende' of 'volwassen' (niet 'later-stage')\n"
+                        "  'tenure' → 'diensttijd' of 'periode' (niet 'tenure')\n"
+                        "  'leverage' (werkwoord) → 'benutten' of 'inzetten' (niet 'leveragen')\n"
+                        "- Behoud de toon van de auteur: informele stukken blijven informeel, "
+                        "analytische stukken blijven analytisch."
                     ),
                 },
                 {

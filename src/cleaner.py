@@ -125,6 +125,14 @@ _KILLLIST_EXACT = [
     r"om\s+de\s+website\s+te\s+(lezen|bezoeken)",
     r"om\s+een\s+reactie\s+achter\s+te\s+laten",
     r"lees\s+online\b",
+    # Podcast / audio player prompts
+    r"luister\s+op\s+(youtube|spotify|apple\s+podcasts?)",
+    r"listen\s+on\s+(youtube|spotify|apple\s+podcasts?)",
+    r"bekijk\s+op\s+(youtube|spotify)",
+    r"watch\s+on\s+(youtube|spotify)",
+    r"available\s+on\s+(spotify|apple\s+podcasts?|youtube)",
+    # Podcast scrubber / tijdstempel (0:00 1:08:27 — audiospeler-indicator)
+    r"^0:00\s+\d+:\d{2}:\d{2}",
 ]
 
 _KILLLIST_PATTERN = re.compile("|".join(_KILLLIST_EXACT), re.IGNORECASE)
@@ -190,8 +198,10 @@ def clean_html(html_content: str) -> str:
     # Stap 3: Verwijder HTML-comments
     _remove_comments(soup)
 
-    # Stap 4: Verwijder script tags
-    _remove_tags(soup, ["script", "noscript"])
+    # Stap 4: Verwijder script tags + niet-renderbare media
+    # iframe/audio/video/embed/object renderen niet in een print-PDF en
+    # bevatten typisch podcast-players, social-embeds en reclame-widgets.
+    _remove_tags(soup, ["script", "noscript", "iframe", "audio", "video", "embed", "object"])
 
     # Stap 4b: Verwijder loshangende "html" artefacten
     _remove_html_artifact(soup)
@@ -683,11 +693,32 @@ def _remove_boilerplate_intros(soup: BeautifulSoup) -> None:
 
 def _remove_advertisements(soup: BeautifulSoup) -> None:
     """
-    Verwijder elementen die 'ADVERTENTIE', 'Gesponsord' of 'Sponsored' bevatten
-    als standalone blok/header. Verwijdert ook het volgende sibling-element
-    (dat doorgaans de advertentie-inhoud bevat).
+    Verwijder gesponsorde blokken uit nieuwsbrieven.
+
+    Matcht zowel enkelvoudige labels ('ADVERTENTIE', 'Gesponsord', 'Sponsored')
+    als meerdere-sponsor-labels ('Vernieuwd door:', 'Brought to you by:',
+    'Presented by:', etc.).
+
+    Verwijdert het label-element + ALLE direct volgende siblings die kort zijn
+    (<= 350 chars per sibling, max 6 siblings) — dit vangt newsletters met
+    meerdere gesponsorde namen onder één header (bijv. Lenny's "Vernieuwd door:
+    Glean … Guru …").
     """
-    _AD_PATTERN = re.compile(r"^\s*(advertentie|gesponsord|sponsored)\s*$", re.IGNORECASE)
+    _AD_PATTERN = re.compile(
+        r"^\s*("
+        r"advertentie"
+        r"|gesponsord"
+        r"|sponsored(?:\s+by)?"
+        r"|vernieuwd\s+door"
+        r"|brought\s+to\s+you\s+by"
+        r"|presented\s+by"
+        r"|in\s+partnership\s+with"
+        r"|met\s+dank\s+aan"
+        r"|mogelijk\s+gemaakt\s+door"
+        r"|this\s+(?:issue|edition|newsletter)\s+is\s+(?:sponsored|brought\s+to\s+you)"
+        r")\s*:?\s*$",
+        re.IGNORECASE,
+    )
 
     for elem in list(soup.find_all(["div", "p", "span", "td", "h1", "h2", "h3",
                                      "h4", "h5", "h6", "section", "center"])):
@@ -698,23 +729,31 @@ def _remove_advertisements(soup: BeautifulSoup) -> None:
         except Exception:
             continue
 
-        if _AD_PATTERN.match(text):
-            # Zoek het volgende sibling-element (de advertentie-inhoud)
-            next_sib = elem.find_next_sibling()
-            if next_sib and next_sib.parent is not None:
-                try:
-                    sib_text_len = len(next_sib.get_text(strip=True))
-                except Exception:
-                    sib_text_len = 0
-                if sib_text_len < 3000:
-                    logger.info(f"    Advertentie-inhoud verwijderd (sibling, {sib_text_len} chars)")
-                    next_sib.decompose()
+        if not _AD_PATTERN.match(text):
+            continue
 
-            # Verwijder het header-element zelf + eventueel de parent als die klein is
-            target = _find_smallest_killable_parent(elem)
-            if target and target.parent is not None:
-                logger.info(f"    Advertentie-blok verwijderd: '{text[:60]}'")
-                target.decompose()
+        # Verwijder alle korte opvolgende siblings (sponsor-namen / -beschrijvingen).
+        # Stop zodra we een langer element tegenkomen — dat is artikel-inhoud.
+        removed = 0
+        for sib in list(elem.find_next_siblings()):
+            if sib.parent is None or removed >= 6:
+                break
+            try:
+                sib_len = len(sib.get_text(strip=True))
+            except Exception:
+                sib_len = 0
+            if sib_len <= 350:
+                logger.info(f"    Sponsor-sibling verwijderd ({sib_len} chars)")
+                sib.decompose()
+                removed += 1
+            else:
+                break  # lange content = artikelinhoud, stoppen
+
+        # Verwijder het label-element zelf (+ eventueel zijn parent als die klein is)
+        target = _find_smallest_killable_parent(elem)
+        if target and target.parent is not None:
+            logger.info(f"    Advertentie-label verwijderd: '{text[:60]}'")
+            target.decompose()
 
 
 def _remove_footers(soup: BeautifulSoup) -> None:

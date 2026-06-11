@@ -242,6 +242,9 @@ def main():
                 "description": toc_data["description"],
                 "was_translated": nl.get("was_translated", False),
             })
+            # Gebruik de Nederlandse TOC-titel ook als artikelkop in de PDF —
+            # zo verschijnt er nooit een Engelse kop boven een vertaald artikel.
+            nl["display_subject"] = toc_data["short_title"]
             logger.info(f"  TOC: '{toc_data['short_title']}'")
         except Exception as e:
             logger.error(f"  Fout bij TOC entry voor '{nl['subject']}': {e}")
@@ -252,6 +255,7 @@ def main():
                 "description": "",
                 "was_translated": nl.get("was_translated", False),
             })
+            nl["display_subject"] = nl["subject"]
 
     # --- Stap 5: PDF samenstellen ---
     logger.info("\n📄 Stap 5: PDF genereren...")

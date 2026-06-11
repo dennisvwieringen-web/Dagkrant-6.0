@@ -95,7 +95,7 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
         <div class="newsletter-section" id="{anchor_id}" style="page-break-before: always;">
             <div class="newsletter-header">
                 <span class="article-number">Nr. {i + 1}</span>
-                <h2 class="newsletter-title">{nl['subject']}</h2>
+                <h2 class="newsletter-title">{nl.get('display_subject', nl['subject'])}</h2>
                 <p class="newsletter-sender">{nl['sender']}</p>
             </div>
             <div class="newsletter-content">
@@ -187,7 +187,7 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
 
         .newsletter-content img {{
             max-width: 100% !important;
-            max-height: 45vh !important;
+            max-height: 30vh !important;
             height: auto !important;
             width: auto !important;
             object-fit: contain;
