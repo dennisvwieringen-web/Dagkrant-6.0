@@ -126,9 +126,15 @@ Public utility functions: `is_website_template()`, `deduplicate_title()`, `strip
 
 **Workflow file:** `.github/workflows/dagkrant.yml`
 
-**Dagelijks** om 14:00 UTC (= 15:00 CET wintertijd / 16:00 CEST zomertijd). Altijd 24 uur terugkijken.
+**Bezorging op ma/wo/do/vr rond 16:00 CEST.** Altijd 24 uur terugkijken.
 
-Cron: `0 14 * * *`. Runs on `ubuntu-latest` with Python 3.12. Playwright Chromium is cached between runs. Secrets (`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `OPENAI_API_KEY`, `TARGET_EMAIL`, `KINDLE_EMAIL`) are stored in GitHub repository secrets.
+**Trigger-architectuur (waarom dit zo is):** GitHub's eigen `schedule`-cron draait op best-effort basis en stelt scheduled runs vaak uren uit (geobserveerd: bezorging om 19:28 i.p.v. 16:00). Daarom is de **primaire trigger een externe cron-dienst (cron-job.org)** die om 16:00 Europe/Amsterdam de GitHub-API `workflow_dispatch` aanroept — die start binnen seconden, zonder wachtrij, en regelt zomer-/wintertijd automatisch. De `schedule`-cron (`0 15 * * 1,3,4,5`, ~17:00 CEST) is **alleen nog een late achtervang**.
+
+**Dubbel-verzending wordt voorkomen** via een dagmarkering in de Actions-cache (key `dagkrant-sent-<datum>`, tijdzone Europe/Amsterdam): de eerste geslaagde run van de dag verstuurt en zet de markering; elke latere run (bv. de achtervang-cron) ziet de cache-hit en slaat alle stappen over. De markering wordt alleen geschreven bij `success()`, zodat een gefaalde run opnieuw geprobeerd kan worden. Een `concurrency`-group (`dagkrant-edition`) serialiseert gelijktijdige runs.
+
+Runs on `ubuntu-latest` with Python 3.12. Playwright Chromium is cached between runs. Secrets (`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `OPENAI_API_KEY`, `TARGET_EMAIL`, `KINDLE_EMAIL`) are stored in GitHub repository secrets.
+
+**cron-job.org-instelling** (eenmalig, buiten de repo): POST naar `https://api.github.com/repos/dennisvwieringen-web/Dagkrant-6.0/actions/workflows/dagkrant.yml/dispatches`, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`. PAT = fine-grained token met **Actions: Read and write** op deze repo. Schema: 16:00, tijdzone Europe/Amsterdam, dagen ma/wo/do/vr.
 
 **Debugging CI failures:** GitHub UI → Actions → click the failed run → expand "Run De Dagkrant" step for full Python logging output.
 
