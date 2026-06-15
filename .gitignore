@@ -34,8 +34,5 @@ desktop.ini
 # Lokale runlogs (Taakplanner)
 logs/
 
-# Lokale dag-dedup markering
-.last-sent
-
 # Claude Code
 .claude/

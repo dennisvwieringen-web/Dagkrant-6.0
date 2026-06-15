@@ -1,32 +1,36 @@
 name: De Dagkrant - Nieuwsbundel
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BEZORGING OM 16:00 CEST — DRAAIT NU LOKAAL OP DE PC VAN DENNIS
+# BEZORGING OM 16:00 CEST
 #
 # PRIMAIRE TRIGGER: een Windows Taakplanner-taak ("Dagkrant-1600") op de pc van
-# Dennis draait om 16:00 op ma/wo/do/vr het script run_dagkrant.ps1, dat de
-# pijplijn rechtstreeks lokaal uitvoert (zie run_dagkrant.ps1 in de repo-root).
-# Reden: GitHub's `schedule`-cron stelt runs vaak uren uit (geobserveerd: 18:40),
-# en de eerdere externe cron-dienst (cron-job.org) viel uit. De lokale Taakplanner
-# is stipt en heeft geen GitHub-wachtrij of externe dienst nodig. Voorwaarde: de
-# pc staat om 16:00 aan + ingelogd — wat het geval is, want de krant wordt op het
-# werk geprint.
+# Dennis roept om 16:00 (ma/wo/do/vr) via run_dagkrant.ps1 de GitHub-API
+# `workflow_dispatch` aan. Die start binnen seconden — GEEN GitHub-wachtrij — en
+# de krant wordt vervolgens HIER IN DE CLOUD opgehaald, vertaald, gerenderd en
+# gemaild. De pijplijn kan NIET lokaal draaien: dat (werk)netwerk blokkeert de
+# mailpoorten (IMAP 993 / SMTP 587); alleen HTTPS (443) werkt, genoeg om deze
+# cloud-run aan te sturen. Authenticatie hergebruikt het token uit Git Credential
+# Manager (geen aparte PAT). Voorwaarde: pc aan + ingelogd om 16:00 — geldt, want
+# de krant wordt op het werk geprint.
 #
-# DE `schedule`-CRON IS BEWUST UITGESCHAKELD: anders zou GitHub later op de dag
-# (~17:00 CEST) een TWEEDE editie sturen bovenop de lokale 16:00-run. De lokale
-# run kan de Actions-cache-markering niet zien, dus de enige veilige manier om
-# dubbel-verzending te voorkomen is de cloud-trigger uitzetten.
+# ACHTERVANG: de `schedule`-cron hieronder. GitHub draait scheduled-cron op
+# best-effort basis en stelt 'm vaak uren uit (geobserveerd: 18:33 CEST), dus
+# dit is BEWUST een late vangnet voor dagen dat de pc om 16:00 uit stond.
 #
-# `workflow_dispatch` BLIJFT staan als handmatige noodknop: draait de pc een keer
-# niet, dan kun je de editie alsnog vanuit GitHub → Actions → "Run workflow"
-# starten. De dagmarkering-cache hieronder voorkomt dan nog steeds dubbele
-# verzending tussen meerdere cloud-runs onderling.
+# GEEN DUBBELE VERZENDING: de dagmarkering in de Actions-cache (zie hieronder)
+# zorgt dat alleen de EERSTE geslaagde run van de dag verstuurt. Op een normale
+# dag verstuurt de 16:00-dispatch en zet de markering; de late `schedule`-cron
+# ziet de cache-hit en slaat alles over. Beide triggers draaien dezelfde
+# workflow, dus de cache geldt voor allebei.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  # schedule:  # UITGESCHAKELD — zie toelichting hierboven. Lokale Taakplanner is nu de stipte 16:00-trigger.
-  #   - cron: '0 15 * * 1,3,4,5'
-  workflow_dispatch:  # ← handmatige noodknop (bv. als de pc een keer uit stond)
+  schedule:
+    # ACHTERVANG — bewust laat (~17:00 CEST zomertijd). De stipte 16:00-trigger
+    # komt van de lokale Taakplanner via workflow_dispatch. Wintertijd (CET):
+    # zet dan op '0 16 * * 1,3,4,5'.
+    - cron: '0 15 * * 1,3,4,5'
+  workflow_dispatch:  # ← primaire trigger (lokale Taakplanner) + handmatig
 
 concurrency:
   group: dagkrant-edition

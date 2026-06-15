@@ -17,7 +17,6 @@ import re
 import sys
 import tempfile
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -62,41 +61,6 @@ def _get_truly_visible_text(html: str) -> str:
     text = text.replace("\xa0", "").strip()
     return text
 
-# Dag-dedup: voorkom een tweede verzending op dezelfde dag.
-# De lokale Taakplanner-run (16:00) kent geen GitHub-Actions-cache, dus deze
-# markering is het lokale equivalent: een handmatige test- of extra run op
-# dezelfde dag ziet de markering en slaat het verzenden over. De markering wordt
-# pas NA een geslaagde verzending geschreven, zodat een gefaalde run opnieuw mag.
-_SENT_MARKER = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".last-sent"
-)
-
-
-def _today_ams() -> str:
-    """Datum van vandaag in Europe/Amsterdam als 'YYYY-MM-DD'."""
-    return datetime.now(ZoneInfo("Europe/Amsterdam")).strftime("%Y-%m-%d")
-
-
-def _already_sent_today() -> bool:
-    """True als er vandaag (Europe/Amsterdam) al een editie is verstuurd."""
-    try:
-        with open(_SENT_MARKER, "r", encoding="utf-8") as f:
-            return f.read().strip() == _today_ams()
-    except FileNotFoundError:
-        return False
-    except Exception:
-        return False
-
-
-def _mark_sent_today() -> None:
-    """Leg vast dat de editie van vandaag is verstuurd."""
-    try:
-        with open(_SENT_MARKER, "w", encoding="utf-8") as f:
-            f.write(_today_ams())
-    except Exception as exc:
-        logger.warning(f"Kon dagmarkering niet schrijven: {exc}")
-
-
 # Dagelijks schema: altijd 24 uur terugkijken
 _HOURS_BACK = 24
 
@@ -135,14 +99,6 @@ def main():
         logger.error(f"Ontbrekende environment variables: {', '.join(missing)}")
         logger.error("Maak een .env bestand aan op basis van .env.example")
         sys.exit(1)
-
-    # Dag-dedup: is de editie van vandaag al verstuurd? Dan stoppen we direct,
-    # zodat een handmatige test- of extra run niet nóg een krant verstuurt.
-    if _already_sent_today():
-        logger.info(
-            f"Editie van {_today_ams()} is vandaag al verstuurd. Run overgeslagen."
-        )
-        return
 
     logger.info("=" * 60)
     logger.info("DE DAGKRANT - Dagelijkse nieuwsbundel")
@@ -355,10 +311,6 @@ def main():
                 smtp_port=smtp_port,
             )
             recipients.append(kindle_email)
-
-        # Markeer pas NA een geslaagde verzending, zodat een gefaalde run
-        # vandaag opnieuw geprobeerd kan worden.
-        _mark_sent_today()
 
         logger.info("\n" + "=" * 60)
         logger.info("DE DAGKRANT IS KLAAR!")
