@@ -124,19 +124,21 @@ Public utility functions: `is_website_template()`, `deduplicate_title()`, `strip
 
 ### Schedule & CI
 
-**Workflow file:** `.github/workflows/dagkrant.yml`
+**Workflow file:** `.github/workflows/dagkrant.yml` · **Lokale launcher:** `run_dagkrant.ps1`
 
-**Bezorging op ma/wo/do/vr rond 16:00 CEST.** Altijd 24 uur terugkijken.
+**Bezorging op ma/wo/do/vr om 16:00 CEST.** Altijd 24 uur terugkijken.
 
-**Trigger-architectuur (waarom dit zo is):** GitHub's eigen `schedule`-cron draait op best-effort basis en stelt scheduled runs vaak uren uit (geobserveerd: bezorging om 19:28 i.p.v. 16:00). Daarom is de **primaire trigger een externe cron-dienst (cron-job.org)** die om 16:00 Europe/Amsterdam de GitHub-API `workflow_dispatch` aanroept — die start binnen seconden, zonder wachtrij, en regelt zomer-/wintertijd automatisch. De `schedule`-cron (`0 15 * * 1,3,4,5`, ~17:00 CEST) is **alleen nog een late achtervang**.
+**Trigger-architectuur (waarom dit zo is):** De krant draait nu **lokaal op de pc van Dennis** via een **Windows Taakplanner-taak `Dagkrant-1600`** (ma/wo/do/vr, 16:00). Die taak start `run_dagkrant.ps1` in de repo-root, dat `cd src && python main.py` draait en alles logt naar `logs/dagkrant-<datum-tijd>.log`. Voorwaarde: pc aan + ingelogd om 16:00 (geldt, want de krant wordt op het werk geprint).
 
-**Dubbel-verzending wordt voorkomen** via een dagmarkering in de Actions-cache (key `dagkrant-sent-<datum>`, tijdzone Europe/Amsterdam): de eerste geslaagde run van de dag verstuurt en zet de markering; elke latere run (bv. de achtervang-cron) ziet de cache-hit en slaat alle stappen over. De markering wordt alleen geschreven bij `success()`, zodat een gefaalde run opnieuw geprobeerd kan worden. Een `concurrency`-group (`dagkrant-edition`) serialiseert gelijktijdige runs.
+*Waarom niet meer in de cloud:* GitHub's `schedule`-cron stelt runs vaak uren uit (geobserveerd: bezorging om 18:40 i.p.v. 16:00), en de eerdere externe trigger (cron-job.org) viel uit — vermoedelijk een verlopen PAT. De lokale Taakplanner is stipt en heeft geen GitHub-wachtrij of externe dienst nodig.
 
-Runs on `ubuntu-latest` with Python 3.12. Playwright Chromium is cached between runs. Secrets (`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `OPENAI_API_KEY`, `TARGET_EMAIL`, `KINDLE_EMAIL`) are stored in GitHub repository secrets.
+**De GitHub `schedule`-cron is UITGESCHAKELD** (uitgecommentarieerd in de workflow) om dubbel-verzending te voorkomen: de lokale 16:00-run kan de Actions-cache-markering niet zien, dus een cloud-cron zou ~17:00 een tweede editie sturen. `workflow_dispatch` blijft als **handmatige noodknop** (GitHub → Actions → "Run workflow") voor dagen dat de pc uit stond. De dagmarkering in de Actions-cache (key `dagkrant-sent-<datum>`) voorkomt nog steeds dubbele verzending tussen meerdere cloud-runs onderling.
 
-**cron-job.org-instelling** (eenmalig, buiten de repo): POST naar `https://api.github.com/repos/dennisvwieringen-web/Dagkrant-6.0/actions/workflows/dagkrant.yml/dispatches`, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`. PAT = fine-grained token met **Actions: Read and write** op deze repo. Schema: 16:00, tijdzone Europe/Amsterdam, dagen ma/wo/do/vr.
+**Lokale taak beheren** (PowerShell): `Get-ScheduledTask -TaskName Dagkrant-1600` (status), `Start-ScheduledTask -TaskName Dagkrant-1600` (nu draaien/testen), `Get-ScheduledTaskInfo -TaskName Dagkrant-1600` (volgende/laatste run + resultaat), `Disable-ScheduledTask` / `Enable-ScheduledTask` (tijdelijk uit/aan). De taak is aangemaakt met `Register-ScheduledTask` en `-LogonType Interactive` (geen wachtwoordopslag). **Let op:** een taaknaam mag geen `:` bevatten — vandaar `Dagkrant-1600` i.p.v. `Dagkrant 16:00`.
 
-**Debugging CI failures:** GitHub UI → Actions → click the failed run → expand "Run De Dagkrant" step for full Python logging output.
+**Cloud-run** (handmatig via `workflow_dispatch`) draait op `ubuntu-latest` met Python 3.12; Playwright Chromium wordt gecachet. Secrets (`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `OPENAI_API_KEY`, `TARGET_EMAIL`, `KINDLE_EMAIL`) staan in GitHub repository secrets. **Lokaal** komen dezelfde waarden uit `.env` (zie `.env.example`).
+
+**Debugging:** lokaal → bekijk `logs/dagkrant-<datum>.log`. Cloud → GitHub UI → Actions → klik de run → vouw "Run De Dagkrant" uit.
 
 ---
 
