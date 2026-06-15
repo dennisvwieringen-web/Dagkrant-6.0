@@ -31,5 +31,8 @@ desktop.ini
 *.pdf
 *.tmp
 
+# Lokale runlogs (Taakplanner)
+logs/
+
 # Claude Code
 .claude/
