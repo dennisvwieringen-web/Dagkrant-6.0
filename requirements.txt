@@ -21,3 +21,6 @@ pypdf==6.7.5
 
 # Afbeeldingsverwerking (Kindle-thumbnail embedding)
 Pillow>=10.0.0
+
+# Tijdzone-database (nodig op Windows voor zoneinfo; Linux heeft systeem-tzdata)
+tzdata>=2024.1
