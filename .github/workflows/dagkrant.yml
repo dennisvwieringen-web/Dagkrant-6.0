@@ -1,32 +1,34 @@
 name: De Dagkrant - Nieuwsbundel
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BEZORGING OM 16:00 CEST
+# RICHTTIJD: KRANT KLAAR OM 15:00 CEST
 #
-# PRIMAIRE TRIGGER: een Windows Taakplanner-taak ("Dagkrant-1600") op de pc van
-# Dennis roept om 16:00 (ma/wo/do/vr) via run_dagkrant.ps1 de GitHub-API
+# PRIMAIRE TRIGGER: een Windows Taakplanner-taak ("Dagkrant-1500") op de pc van
+# Dennis roept om 14:30 (ma/wo/do/vr) via run_dagkrant.ps1 de GitHub-API
 # `workflow_dispatch` aan. Die start binnen seconden — GEEN GitHub-wachtrij — en
 # de krant wordt vervolgens HIER IN DE CLOUD opgehaald, vertaald, gerenderd en
-# gemaild. De pijplijn kan NIET lokaal draaien: dat (werk)netwerk blokkeert de
-# mailpoorten (IMAP 993 / SMTP 587); alleen HTTPS (443) werkt, genoeg om deze
-# cloud-run aan te sturen. Authenticatie hergebruikt het token uit Git Credential
-# Manager (geen aparte PAT). Voorwaarde: pc aan + ingelogd om 16:00 — geldt, want
-# de krant wordt op het werk geprint.
+# gemaild. De trigger staat op 14:30 (en niet 15:00) omdat de cloud-run zelf
+# enkele tot ~tientallen minuten kost (vooral het vertalen); zo is de krant rond
+# de richttijd 15:00 binnen. De pijplijn kan NIET lokaal draaien: dat (werk)-
+# netwerk blokkeert de mailpoorten (IMAP 993 / SMTP 587); alleen HTTPS (443)
+# werkt, genoeg om deze cloud-run aan te sturen. Authenticatie hergebruikt het
+# token uit Git Credential Manager (geen aparte PAT). Voorwaarde: pc aan +
+# ingelogd om 14:30 — geldt, want de krant wordt op het werk geprint.
 #
 # ACHTERVANG: de `schedule`-cron hieronder. GitHub draait scheduled-cron op
 # best-effort basis en stelt 'm vaak uren uit (geobserveerd: 18:33 CEST), dus
-# dit is BEWUST een late vangnet voor dagen dat de pc om 16:00 uit stond.
+# dit is BEWUST een late vangnet voor dagen dat de pc om 14:30 uit stond.
 #
 # GEEN DUBBELE VERZENDING: de dagmarkering in de Actions-cache (zie hieronder)
 # zorgt dat alleen de EERSTE geslaagde run van de dag verstuurt. Op een normale
-# dag verstuurt de 16:00-dispatch en zet de markering; de late `schedule`-cron
+# dag verstuurt de 14:30-dispatch en zet de markering; de late `schedule`-cron
 # ziet de cache-hit en slaat alles over. Beide triggers draaien dezelfde
 # workflow, dus de cache geldt voor allebei.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
   schedule:
-    # ACHTERVANG — bewust laat (~17:00 CEST zomertijd). De stipte 16:00-trigger
+    # ACHTERVANG — bewust laat (~17:00 CEST zomertijd). De stipte 14:30-trigger
     # komt van de lokale Taakplanner via workflow_dispatch. Wintertijd (CET):
     # zet dan op '0 16 * * 1,3,4,5'.
     - cron: '0 15 * * 1,3,4,5'

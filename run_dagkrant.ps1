@@ -1,10 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Lokale trigger voor De Dagkrant.
 #
-# Wordt aangeroepen door de Windows Taakplanner-taak "Dagkrant-1600"
-# (ma/wo/do/vr om 16:00). Start de GitHub Actions-workflow stipt via de API
-# (`workflow_dispatch`) — de krant wordt vervolgens IN DE CLOUD opgehaald,
-# vertaald, gerenderd en gemaild.
+# Wordt aangeroepen door de Windows Taakplanner-taak "Dagkrant-1500"
+# (ma/wo/do/vr om 14:30; richttijd krant klaar 15:00). Start de GitHub Actions-
+# workflow stipt via de API (`workflow_dispatch`) — de krant wordt vervolgens
+# IN DE CLOUD opgehaald, vertaald, gerenderd en gemaild.
 #
 # Waarom niet lokaal draaien? Dit (werk)netwerk blokkeert de mailpoorten
 # (IMAP 993 en SMTP 587), dus de pijplijn kan hier geen Gmail benaderen. Alleen

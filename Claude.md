@@ -100,7 +100,7 @@ Cleaning runs in strict order; early passes enable later ones:
 4. BeautifulSoup parsing starts
 5. `_remove_forwarding_headers()` — email forward metadata
 6. `_remove_user_signature()` — Fioretti College-specific disclaimers
-7. `_remove_comments()` + scripts/noscript
+7. `_remove_comments()` + `<script>`/`<noscript>`/`<style>`/`<link>` + niet-renderbare media (`iframe`/`audio`/`video`/`embed`/`object`). **`<style>`/`<link>` worden verwijderd omdat globale resets (`body { background }`) anders over het HELE PDF lekken — incl. de voorpagina (oorzaak van de roze cover-bug).**
 8. `_remove_html_artifact()` — stray "html" text nodes from nested `<html>` tags
 9. `_remove_tracking_pixels()` — 1×1 images
 10. `_flatten_nrc_drop_caps()` + `_remove_nrc_promo_footer()` — NRC-specific fixes
@@ -110,7 +110,9 @@ Cleaning runs in strict order; early passes enable later ones:
 14. `_remove_footers()` — unsubscribe sections, addresses, powered-by footers (bottom 40% only)
 15. `_remove_empty_containers()` — cleanup orphaned divs/tds
 
-Public utility functions: `is_website_template()`, `deduplicate_title()`, `strip_ai_artifacts()`
+Public utility functions: `is_website_template()`, `deduplicate_title()`, `strip_ai_artifacts()`, `minimal_clean()`.
+
+**`minimal_clean()` — vangnet tegen content-loss:** doet alleen de veilige verwijderingen (scripts/styles/media/comments/tracking, géén kill-list/footers/ads/boilerplate/lege-containers). `main.py` valt hierop terug wanneer `clean_html()` de zichtbare tekst onder de 300-drempel brengt terwijl het origineel wél inhoud had — zo verdwijnt een artikel niet meer doordat de agressieve opschoning het volledig wegvaagt.
 
 ### Key thresholds (defined in `main.py`)
 
@@ -126,17 +128,17 @@ Public utility functions: `is_website_template()`, `deduplicate_title()`, `strip
 
 **Workflow file:** `.github/workflows/dagkrant.yml` · **Lokale trigger:** `run_dagkrant.ps1`
 
-**Bezorging op ma/wo/do/vr om 16:00 CEST.** Altijd 24 uur terugkijken. **De pijplijn draait altijd in de cloud (GitHub Actions); de pc start die alleen stipt op tijd.**
+**Richttijd: krant klaar om 15:00 CEST (ma/wo/do/vr).** Altijd 24 uur terugkijken. **De pijplijn draait altijd in de cloud (GitHub Actions); de pc start die alleen stipt op tijd.**
 
-**Trigger-architectuur (waarom dit zo is):** Een **Windows Taakplanner-taak `Dagkrant-1600`** op de pc van Dennis (ma/wo/do/vr, 16:00) draait `run_dagkrant.ps1`, dat via de GitHub-API `workflow_dispatch` aanroept — die start de cloud-run binnen seconden, zonder GitHub-wachtrij. De krant wordt dus volledig in de cloud opgehaald, vertaald, gerenderd en gemaild. Voorwaarde: pc aan + ingelogd om 16:00 (geldt, want de krant wordt op het werk geprint).
+**Trigger-architectuur (waarom dit zo is):** Een **Windows Taakplanner-taak `Dagkrant-1500`** op de pc van Dennis (ma/wo/do/vr, **14:30**) draait `run_dagkrant.ps1`, dat via de GitHub-API `workflow_dispatch` aanroept — die start de cloud-run binnen seconden, zonder GitHub-wachtrij. De krant wordt dus volledig in de cloud opgehaald, vertaald, gerenderd en gemaild. De trigger staat op 14:30 (niet 15:00) omdat de cloud-run zelf enkele tot ~tientallen minuten kost (vooral het vertalen); zo is de krant rond de **richttijd 15:00** binnen. Voorwaarde: pc aan + ingelogd om 14:30 (geldt, want de krant wordt op het werk geprint).
 
-*Waarom niet lokaal draaien:* het werknetwerk **blokkeert de mailpoorten** (IMAP 993 / SMTP 587) — getest met `Test-NetConnection`. Alleen HTTPS (443) werkt, precies genoeg om de cloud-run aan te sturen. *Waarom niet GitHub-cron als primair:* die wordt best-effort uitgesteld (geobserveerd: 18:33 CEST i.p.v. 16:00). De eerdere externe trigger (cron-job.org) viel uit — vermoedelijk een verlopen PAT.
+*Waarom niet lokaal draaien:* het werknetwerk **blokkeert de mailpoorten** (IMAP 993 / SMTP 587) — getest met `Test-NetConnection`. Alleen HTTPS (443) werkt, precies genoeg om de cloud-run aan te sturen. *Waarom niet GitHub-cron als primair:* die wordt best-effort uitgesteld (geobserveerd: 18:33 CEST i.p.v. op tijd). De eerdere externe trigger (cron-job.org) viel uit — vermoedelijk een verlopen PAT.
 
 **Authenticatie zonder aparte PAT:** `run_dagkrant.ps1` haalt het GitHub-token op uit **Git Credential Manager** (`git credential fill` — hetzelfde `gho_`-token dat `git push` gebruikt; bleek `workflow_dispatch`-rechten te hebben). Geen secret in de repo, geen losse PAT. Werkt non-interactief zolang de taak draait als de ingelogde gebruiker (vandaar `-LogonType Interactive`). Verloopt het token → eenmalig `git push` of `git fetch` doen ververst het via GCM.
 
-**Achtervang + geen dubbele verzending:** de `schedule`-cron (`0 15 * * 1,3,4,5`, ~17:00 CEST, wintertijd `0 16`) blijft staan als **late vangnet** voor dagen dat de pc om 16:00 uit stond. Dubbel-verzending is uitgesloten door de **dagmarkering in de Actions-cache** (key `dagkrant-sent-<datum>`, Europe/Amsterdam): op een normale dag verstuurt de 16:00-dispatch en zet de markering; de late `schedule`-cron ziet de cache-hit en slaat alles over. Beide triggers draaien dezelfde workflow, dus de cache geldt voor allebei. De markering wordt alleen bij `success()` geschreven, zodat een gefaalde run opnieuw mag. Een `concurrency`-group (`dagkrant-edition`) serialiseert gelijktijdige runs.
+**Achtervang + geen dubbele verzending:** de `schedule`-cron (`0 15 * * 1,3,4,5`, ~17:00 CEST, wintertijd `0 16`) blijft staan als **late vangnet** voor dagen dat de pc om 14:30 uit stond. Dubbel-verzending is uitgesloten door de **dagmarkering in de Actions-cache** (key `dagkrant-sent-<datum>`, Europe/Amsterdam): op een normale dag verstuurt de 14:30-dispatch en zet de markering; de late `schedule`-cron ziet de cache-hit en slaat alles over. Beide triggers draaien dezelfde workflow, dus de cache geldt voor allebei. De markering wordt alleen bij `success()` geschreven, zodat een gefaalde run opnieuw mag. Een `concurrency`-group (`dagkrant-edition`) serialiseert gelijktijdige runs.
 
-**Lokale taak beheren** (PowerShell): `Get-ScheduledTaskInfo -TaskName Dagkrant-1600` (volgende/laatste run + resultaat), `Start-ScheduledTask -TaskName Dagkrant-1600` (nu triggeren/testen), `Disable-ScheduledTask` / `Enable-ScheduledTask` (tijdelijk uit/aan). Aangemaakt met `Register-ScheduledTask` + `-LogonType Interactive` (geen wachtwoordopslag). **Let op:** een taaknaam mag geen `:` bevatten — vandaar `Dagkrant-1600` i.p.v. `Dagkrant 16:00`.
+**Lokale taak beheren** (PowerShell): `Get-ScheduledTaskInfo -TaskName Dagkrant-1500` (volgende/laatste run + resultaat), `Start-ScheduledTask -TaskName Dagkrant-1500` (nu triggeren/testen), `Disable-ScheduledTask` / `Enable-ScheduledTask` (tijdelijk uit/aan). Aangemaakt met `Register-ScheduledTask` + `-LogonType Interactive` (geen wachtwoordopslag). **Let op:** een taaknaam mag geen `:` bevatten — vandaar `Dagkrant-1500` i.p.v. `Dagkrant 15:00`.
 
 Runs on `ubuntu-latest` met Python 3.12; Playwright Chromium wordt gecachet. Secrets (`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `OPENAI_API_KEY`, `TARGET_EMAIL`, `KINDLE_EMAIL`) staan in GitHub repository secrets.
 
@@ -164,6 +166,8 @@ Runs on `ubuntu-latest` met Python 3.12; Playwright Chromium wordt gecachet. Sec
 **Language detection bias:** The heuristic requires Dutch to score ≥ 1.3× English markers before classifying as Dutch. When in doubt, it translates — false positives (unnecessary translation) are preferred over leaving English in the output.
 
 **Per-article resilience:** Every article is wrapped in `try/except`. A crash in one article logs the error and continues — the PDF is never blocked by a single bad email.
+
+**Content-loss vangnetten (toon liever imperfect dan niets):** twee fallbacks in `main.py` voorkomen dat goede nieuwsbrieven verdwijnen. **(A)** Brengt `clean_html()` de zichtbare tekst onder de 300-drempel terwijl het origineel ≥300 had, dan valt de pijplijn terug op `minimal_clean()` i.p.v. het artikel te droppen. **(B)** Levert de vertaling (bijna) lege inhoud terwijl het Engelse origineel inhoud had, dan blijft het Engelse origineel staan (`was_translated` weer op `False`). Beide zijn geobserveerd in productie (Wilfred Rubens resp. The New Yorker, 18 juni 2026): zonder de vangnetten werden die artikelen volledig overgeslagen.
 
 **TOC uses content snippet:** `generate_toc_entry()` receives the first 400 chars of visible article text, enabling factual descriptions instead of subject-line guesses. The prompt explicitly forbids clickbait phrases like "Ontdek..." or "Verken...".
 

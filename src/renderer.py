@@ -118,6 +118,14 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
             margin: 15mm;
         }}
 
+        /* Forceer een witte achtergrond op het HELE document. Sommige
+           nieuwsbrieven bevatten een <style>-blok met een globale
+           `body {{ background: ... }}`-regel die anders over alle pagina's
+           lekt — inclusief de voorpagina (geobserveerd: roze cover). */
+        html, body {{
+            background: #ffffff !important;
+        }}
+
         body {{
             font-family: Georgia, 'Times New Roman', serif;
             line-height: 1.6;

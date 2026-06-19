@@ -201,7 +201,14 @@ def clean_html(html_content: str) -> str:
     # Stap 4: Verwijder script tags + niet-renderbare media
     # iframe/audio/video/embed/object renderen niet in een print-PDF en
     # bevatten typisch podcast-players, social-embeds en reclame-widgets.
-    _remove_tags(soup, ["script", "noscript", "iframe", "audio", "video", "embed", "object"])
+    #
+    # <style>/<link> verwijderen we ook: nieuwsbrieven stylen hun inhoud vrijwel
+    # volledig inline (voor e-mailclient-compatibiliteit), terwijl hun <style>-
+    # blokken globale resets bevatten — o.a. `body { background: ... }` — die
+    # anders over het HELE PDF-document lekken, inclusief de voorpagina
+    # (geobserveerd: roze cover). Tekst verdwijnt hierdoor niet: visible-text
+    # telling negeert <style> toch al.
+    _remove_tags(soup, ["script", "noscript", "iframe", "audio", "video", "embed", "object", "style", "link"])
 
     # Stap 4b: Verwijder loshangende "html" artefacten
     _remove_html_artifact(soup)
@@ -227,6 +234,36 @@ def clean_html(html_content: str) -> str:
 
     # Stap 9: Verwijder lege containers
     _remove_empty_containers(soup)
+
+    return str(soup)
+
+
+def minimal_clean(html_content: str) -> str:
+    """
+    Lichte opschoning als vangnet voor wanneer clean_html() te agressief is.
+
+    Doet ALLEEN de veilige, niet-inhoudelijke verwijderingen:
+    - AI-code-fences en MSO-conditionals (string-niveau)
+    - <script>/<noscript>/<style>/<link> en niet-renderbare media
+    - HTML-comments, geneste <html>-artefacten en tracking pixels
+
+    Slaat de agressieve passes (kill-list, footers, advertenties, boilerplate,
+    lege containers) BEWUST over — dat zijn de passes die soms een heel artikel
+    wegvagen. Wordt gebruikt door main.py wanneer clean_html() de zichtbare tekst
+    onder de drempel brengt terwijl het origineel wél inhoud had.
+    """
+    if not html_content:
+        return html_content
+
+    html_content = _remove_ai_artifacts_raw(html_content)
+    html_content = _remove_mso_conditionals(html_content)
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    _remove_comments(soup)
+    _remove_tags(soup, ["script", "noscript", "iframe", "audio", "video",
+                        "embed", "object", "style", "link"])
+    _remove_html_artifact(soup)
+    _remove_tracking_pixels(soup)
 
     return str(soup)
 

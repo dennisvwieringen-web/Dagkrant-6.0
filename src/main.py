@@ -7,8 +7,8 @@ Dit is het hoofdscript dat alle modules aanstuurt:
 3. PDF genereren met voorblad en inhoudsopgave
 4. PDF e-mailen naar het werkadres + Kindle
 
-Schema: dagelijks om 15:00 CET (14:00 UTC).
-Elke dag → 24 uur terugkijken.
+Schema: ma/wo/do/vr, richttijd krant klaar om 15:00 CEST (lokale Taakplanner
+triggert de cloud-run om 14:30). Elke run → 24 uur terugkijken.
 """
 
 import logging
@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters, fetch_article_urls
 from web_article import fetch_article
 from translator import detect_language, generate_toc_entry, translate_html
-from cleaner import clean_html, deduplicate_title, is_website_template, strip_ai_artifacts
+from cleaner import clean_html, minimal_clean, deduplicate_title, is_website_template, strip_ai_artifacts
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
 
 # Logging configuratie
@@ -157,8 +157,9 @@ def main():
                 continue
 
             # Stap 2b: HTML opschonen
-            original_len = len(nl["html_content"])
-            nl["html_content"] = clean_html(nl["html_content"])
+            raw_html = nl["html_content"]
+            original_len = len(raw_html)
+            nl["html_content"] = clean_html(raw_html)
             cleaned_len = len(nl["html_content"])
             reduction = ((original_len - cleaned_len) / original_len * 100) if original_len > 0 else 0
             logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
@@ -167,6 +168,21 @@ def main():
             # Gebruikt _get_truly_visible_text() die ook display:none en &nbsp;
             # weefiltert — dit vangt Substack-stijl emails met hidden preview text.
             visible_text = _get_truly_visible_text(nl["html_content"])
+
+            # VANGNET A: als clean_html() de tekst onder de drempel bracht maar het
+            # origineel wél genoeg inhoud had, dan heeft de agressieve opschoning
+            # het artikel weggevaagd. Val terug op een lichte opschoning i.p.v. het
+            # artikel te droppen (geobserveerd bij o.a. Wilfred Rubens-nieuwsbrieven).
+            if len(visible_text) < 300:
+                original_visible = _get_truly_visible_text(raw_html)
+                if len(original_visible) >= 300:
+                    logger.warning(
+                        f"  ↩ '{subject}': clean_html() liet maar {len(visible_text)} tekens over "
+                        f"(origineel: {len(original_visible)}). Val terug op minimal_clean()."
+                    )
+                    nl["html_content"] = minimal_clean(raw_html)
+                    visible_text = _get_truly_visible_text(nl["html_content"])
+
             if len(visible_text) < 300:
                 logger.warning(
                     f"  ⚠️ '{subject}' heeft te weinig zichtbare tekst "
@@ -184,10 +200,25 @@ def main():
 
             if lang == "en":
                 logger.info(f"    Vertalen naar Nederlands...")
-                nl["html_content"] = translate_html(nl["html_content"], openai_api_key)
+                pre_translation_html = nl["html_content"]
+                translated = translate_html(nl["html_content"], openai_api_key)
                 # Vertaler kan code-fence artefacten toevoegen (```html ... ```)
-                nl["html_content"] = strip_ai_artifacts(nl["html_content"])
-                logger.info(f"    Vertaling voltooid.")
+                translated = strip_ai_artifacts(translated)
+
+                # VANGNET B: als de vertaling (bijna) leeg terugkomt terwijl het
+                # Engelse origineel wél inhoud had, behoud dan het origineel i.p.v.
+                # het artikel te droppen. Engels lezen is beter dan een leeg artikel
+                # (geobserveerd bij o.a. The New Yorker).
+                if len(_get_truly_visible_text(translated)) >= 100:
+                    nl["html_content"] = translated
+                    logger.info(f"    Vertaling voltooid.")
+                else:
+                    nl["html_content"] = pre_translation_html
+                    nl["was_translated"] = False
+                    logger.warning(
+                        f"    ↩ '{subject}': vertaling leverde lege inhoud — "
+                        f"behoud het Engelse origineel."
+                    )
 
             # FINALE VEILIGHEIDSCHECK: meet de echt zichtbare tekst na ALLE
             # verwerking (cleaning + deduplicate_title + vertaling).
