@@ -165,13 +165,13 @@
     </style>
 
     <div class="cover-masthead">
-        <h1 class="cover-title">De Dagkrant</h1>
-        <p class="cover-subtitle">Jouw persoonlijke nieuwsbundel, dagelijks samengesteld</p>
+        <h1 class="cover-title">{{ masthead_title or "De Dagkrant" }}</h1>
+        <p class="cover-subtitle">{{ masthead_subtitle or "Jouw persoonlijke nieuwsbundel, dagelijks samengesteld" }}</p>
     </div>
 
     <div class="cover-meta">
         <span>{{ date }}</span>
-        <span class="cover-edition">Editie #{{ edition_number }}</span>
+        <span class="cover-edition">{{ edition_label or ("Editie #" ~ edition_number) }}</span>
         <span>{{ newsletter_count }} nieuwsbrie{{ 'f' if newsletter_count == 1 else 'ven' }}</span>
     </div>
 

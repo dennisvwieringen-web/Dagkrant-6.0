@@ -53,13 +53,22 @@ def _get_edition_number() -> int:
     return (now - start_date).days + 1
 
 
-def render_cover_page(newsletters: list[dict], toc_entries: list[dict]) -> str:
+def render_cover_page(
+    newsletters: list[dict],
+    toc_entries: list[dict],
+    masthead_title: str | None = None,
+    masthead_subtitle: str | None = None,
+    edition_label: str | None = None,
+) -> str:
     """
     Render het voorblad + inhoudsopgave als HTML.
 
     Args:
         newsletters: Lijst van nieuwsbrief-dicts.
         toc_entries: Lijst van dicts met 'subject', 'sender', 'description'.
+        masthead_title: Optionele titel i.p.v. "De Dagkrant" (bv. voor een magazine).
+        masthead_subtitle: Optionele ondertitel i.p.v. de standaardtekst.
+        edition_label: Optioneel label i.p.v. "Editie #N" (bv. een datumbereik).
 
     Returns:
         HTML-string van het voorblad.
@@ -73,6 +82,9 @@ def render_cover_page(newsletters: list[dict], toc_entries: list[dict]) -> str:
         edition_number=_get_edition_number(),
         newsletter_count=len(newsletters),
         toc_entries=toc_entries,
+        masthead_title=masthead_title,
+        masthead_subtitle=masthead_subtitle,
+        edition_label=edition_label,
     )
 
 
@@ -400,8 +412,15 @@ def send_email_with_pdf(
     recipient_email: str,
     smtp_server: str = "smtp.gmail.com",
     smtp_port: int = 587,
+    subject: str | None = None,
+    body: str | None = None,
+    filename: str | None = None,
 ) -> None:
-    """Verstuur de PDF als e-mailbijlage."""
+    """Verstuur de PDF als e-mailbijlage.
+
+    `subject`, `body` en `filename` zijn optioneel en overschrijven de standaard
+    "Dagkrant Editie #N"-teksten (gebruikt door bv. een magazine-run).
+    """
     import smtplib
     from email.mime.application import MIMEApplication
     from email.mime.multipart import MIMEMultipart
@@ -409,14 +428,14 @@ def send_email_with_pdf(
 
     now = datetime.now(timezone.utc)
     edition = _get_edition_number()
-    subject = f"De Dagkrant - Editie #{edition} - {_format_dutch_date(now)}"
+    subject = subject or f"De Dagkrant - Editie #{edition} - {_format_dutch_date(now)}"
 
     msg = MIMEMultipart()
     msg["From"] = sender_email
     msg["To"] = recipient_email
     msg["Subject"] = subject
 
-    body = (
+    body = body or (
         f"Goedemiddag!\n\n"
         f"Hierbij de Dagkrant van vandaag (Editie #{edition}).\n"
         f"Veel leesplezier!\n\n"
@@ -425,7 +444,7 @@ def send_email_with_pdf(
     )
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    filename = f"Dagkrant_Editie_{edition}_{now.strftime('%Y%m%d')}.pdf"
+    filename = filename or f"Dagkrant_Editie_{edition}_{now.strftime('%Y%m%d')}.pdf"
     with open(pdf_path, "rb") as f:
         pdf_attachment = MIMEApplication(f.read(), _subtype="pdf")
         pdf_attachment.add_header("Content-Disposition", "attachment", filename=filename)

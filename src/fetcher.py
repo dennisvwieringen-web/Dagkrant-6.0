@@ -143,17 +143,31 @@ def fetch_newsletters(
     gmail_password: str,
     label: str = "Nieuwsbrieven",
     hours_back: int = 24,
+    since_date: Optional[datetime] = None,
+    until_date: Optional[datetime] = None,
+    sender_filter: Optional[str] = None,
 ) -> list[dict]:
     """
     Haal nieuwsbrieven op uit Gmail via IMAP.
+
+    Standaard wordt `hours_back` gebruikt om het tijdvenster te bepalen (dagelijkse
+    editie). Geef `since_date`/`until_date` expliciet mee om een vast datumbereik
+    op te vragen (bv. voor een magazine over een hele maand) — dat overschrijft
+    `hours_back`. `sender_filter` (case-insensitive substring) beperkt het resultaat
+    tot e-mails waarvan de afzender of het onderwerp die tekst bevat.
 
     Returns:
         Lijst van dicts met keys: subject, sender, date, html_content, plain_content
     """
     newsletters = []
-    since_date = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    if since_date is None:
+        since_date = datetime.now(timezone.utc) - timedelta(hours=hours_back)
     # IMAP SINCE gebruikt alleen een datum (geen tijd)
     since_str = since_date.strftime("%d-%b-%Y")
+    search_criteria = f'(SINCE "{since_str}")'
+    if until_date is not None:
+        before_str = until_date.strftime("%d-%b-%Y")
+        search_criteria = f'(SINCE "{since_str}" BEFORE "{before_str}")'
 
     logger.info(f"Verbinden met Gmail IMAP als {gmail_user}...")
 
@@ -208,14 +222,14 @@ def fetch_newsletters(
                     logger.warning(f"Kan folder '{folder}' niet openen, skip.")
                     continue
 
-                # Zoek e-mails sinds de opgegeven datum
-                status, message_ids = mail.search(None, f'(SINCE "{since_str}")')
+                # Zoek e-mails binnen het opgegeven tijdvenster
+                status, message_ids = mail.search(None, search_criteria)
                 if status != "OK" or not message_ids[0]:
-                    logger.debug(f"Geen e-mails in '{folder}' sinds {since_str}.")
+                    logger.debug(f"Geen e-mails in '{folder}' voor {search_criteria}.")
                     continue
 
                 ids = message_ids[0].split()
-                logger.info(f"  {len(ids)} e-mail(s) in '{folder}' sinds {since_str}.")
+                logger.info(f"  {len(ids)} e-mail(s) in '{folder}' voor {search_criteria}.")
 
                 for msg_id in ids:
                     try:
@@ -240,6 +254,8 @@ def fetch_newsletters(
                             parsed_date = parsed_date.replace(tzinfo=timezone.utc)
                         if parsed_date < since_date:
                             continue
+                        if until_date is not None and parsed_date >= until_date:
+                            continue
 
                         subject = _decode_header_value(msg.get("Subject", "(Geen onderwerp)"))
                         envelope_sender = _decode_header_value(msg.get("From", "(Onbekende afzender)"))
@@ -256,6 +272,11 @@ def fetch_newsletters(
 
                         # Extraheer de echte afzender bij doorgestuurde e-mails
                         sender = extract_real_sender(plain_content, html_content, envelope_sender)
+
+                        # Magazine-modus: filter op afzender/onderwerp (case-insensitive substring)
+                        if sender_filter and sender_filter.lower() not in sender.lower() \
+                                and sender_filter.lower() not in subject.lower():
+                            continue
 
                         newsletters.append({
                             "subject": subject,

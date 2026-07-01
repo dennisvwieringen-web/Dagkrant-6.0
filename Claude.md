@@ -144,6 +144,16 @@ Runs on `ubuntu-latest` met Python 3.12; Playwright Chromium wordt gecachet. Sec
 
 **Debugging:** trigger lokaal → `logs/dagkrant-<datum>.log` (alleen de dispatch-status). De inhoudelijke run → GitHub UI → Actions → klik de run → vouw "Run De Dagkrant" uit. Via de API: `GET /repos/dennisvwieringen-web/Dagkrant-6.0/actions/runs` met het GCM-token.
 
+### Magazine-modus (ad-hoc bundel over een vast datumbereik)
+
+Naast de dagelijkse 24-uurs editie kan dezelfde workflow ook een **magazine** genereren: een bundel van alle nieuwsbrieven binnen een gekozen datumbereik, optioneel gefilterd op afzender/onderwerp — bv. "alle Google-nieuwsbrieven van juni". Getriggerd via `dashboard.html` (kaart "Magazine maken") of direct via `workflow_dispatch` met `mode: magazine`.
+
+- **Inputs:** `mode` (`dagkrant`/`magazine`), `sender_filter`, `date_from`/`date_to` (`YYYY-MM-DD`), `title` — gedefinieerd in `.github/workflows/dagkrant.yml`, doorgegeven aan `main.py` als env vars (`MODE`, `MAGAZINE_SENDER`, `MAGAZINE_FROM`, `MAGAZINE_TO`, `MAGAZINE_TITLE`).
+- **fetcher.py:** `fetch_newsletters()` accepteert nu ook `since_date`/`until_date` (i.p.v. `hours_back`) en `sender_filter` (case-insensitive substring op afzender óf onderwerp). IMAP `BEFORE` is exclusief, dus `until_date` = gekozen einddatum + 1 dag.
+- **main.py:** in magazine-modus vervalt `MAX_PER_SENDER` (het hele punt is om alles van de gekozen periode/afzender te bundelen) en wordt stap 1b (handmatige "Dagkrant/Lezen"-artikelen) overgeslagen.
+- **Cover & mail:** `render_cover_page()` en `send_email_with_pdf()` accepteren optionele overrides (`masthead_title`, `masthead_subtitle`, `edition_label`, `subject`, `body`, `filename`) zodat een magazine een eigen titel/onderwerp/bestandsnaam krijgt i.p.v. "Dagkrant Editie #N".
+- **Dagmarkering-cache blijft ongemoeid:** een magazine-run schrijft de `dagkrant-sent-<datum>`-markering **niet** (anders zou een geslaagd magazine de dagelijkse krant van diezelfde dag blokkeren) en negeert 'm bij het bepalen of de run mag starten (anders zou een magazine niet meer werken op een dag dat de dagkrant al verstuurd is). Zie de `if:`-condities in `dagkrant.yml` (`... || github.event.inputs.mode == 'magazine'` resp. `... && github.event.inputs.mode != 'magazine'`).
+
 ---
 
 ## Known Behaviour & Solved Issues

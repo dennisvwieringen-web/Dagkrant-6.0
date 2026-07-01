@@ -411,6 +411,37 @@
     <div id="run-status" class="status"></div>
   </div>
 
+  <!-- Magazine -->
+  <div class="card full">
+    <div class="card-title">Magazine maken</div>
+    <p class="run-description">
+      Bundel nieuwsbrieven uit een vast datumbereik in plaats van de laatste 24 uur —
+      bijvoorbeeld alle Google-nieuwsbrieven van afgelopen juni. Geen limiet per afzender.
+    </p>
+
+    <label for="mag-sender">Afzender / zoekterm (optioneel)</label>
+    <input type="text" id="mag-sender" placeholder="bv. Google">
+
+    <div style="display: flex; gap: 12px;">
+      <div style="flex: 1;">
+        <label for="mag-from">Vanaf</label>
+        <input type="date" id="mag-from">
+      </div>
+      <div style="flex: 1;">
+        <label for="mag-to">Tot en met</label>
+        <input type="date" id="mag-to">
+      </div>
+    </div>
+
+    <label for="mag-title">Titel op de cover (optioneel)</label>
+    <input type="text" id="mag-title" placeholder="bv. Google Recap — Juni 2026">
+
+    <div class="btn-row">
+      <button class="btn btn-run" style="width: auto; flex: 1;" onclick="triggerMagazine()">▶&nbsp; Magazine genereren</button>
+    </div>
+    <div id="magazine-status" class="status"></div>
+  </div>
+
 </div>
 
 <script>
@@ -554,6 +585,25 @@
       await apiPost(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/dagkrant.yml/dispatches`, { ref: 'main' });
       showStatus('run-status', 'success', 'Run gestart! Bekijk de voortgang in GitHub Actions.');
     } catch(e) { showStatus('run-status', 'error', `Fout: ${e.message}`); }
+  }
+
+  async function triggerMagazine() {
+    const sender = document.getElementById('mag-sender').value.trim();
+    const from = document.getElementById('mag-from').value;
+    const to = document.getElementById('mag-to').value;
+    const title = document.getElementById('mag-title').value.trim();
+
+    if (!from || !to) return showStatus('magazine-status', 'error', 'Vul een "vanaf" en "tot en met" datum in.');
+    if (from > to) return showStatus('magazine-status', 'error', '"Vanaf" moet vóór of gelijk aan "tot en met" zijn.');
+
+    showStatus('magazine-status', 'loading', 'Magazine-run starten…');
+    try {
+      await apiPost(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/dagkrant.yml/dispatches`, {
+        ref: 'main',
+        inputs: { mode: 'magazine', sender_filter: sender, date_from: from, date_to: to, title: title }
+      });
+      showStatus('magazine-status', 'success', 'Magazine-run gestart! Bekijk de voortgang in GitHub Actions.');
+    } catch(e) { showStatus('magazine-status', 'error', `Fout: ${e.message}`); }
   }
 
   function showStatus(id, type, msg) {

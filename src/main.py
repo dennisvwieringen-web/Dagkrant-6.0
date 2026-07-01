@@ -16,7 +16,8 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -71,6 +72,30 @@ def _calculate_hours_back() -> int:
     return _HOURS_BACK
 
 
+_NL_MONTHS_SHORT = {
+    1: "januari", 2: "februari", 3: "maart", 4: "april", 5: "mei", 6: "juni",
+    7: "juli", 8: "augustus", 9: "september", 10: "oktober", 11: "november", 12: "december",
+}
+
+
+def _parse_local_date(value: str) -> datetime:
+    """Parse 'YYYY-MM-DD' als start-van-de-dag in Europe/Amsterdam, terug in UTC."""
+    local = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
+    return local.astimezone(timezone.utc)
+
+
+def _format_dutch_date_only(value: str) -> str:
+    """Formatteer 'YYYY-MM-DD' naar '1 juni 2026'."""
+    d = datetime.strptime(value, "%Y-%m-%d")
+    return f"{d.day} {_NL_MONTHS_SHORT[d.month]} {d.year}"
+
+
+def _slugify(value: str) -> str:
+    """Maak een bestandsnaam-veilige slug van een titel."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
+    return slug or "Magazine"
+
+
 def main():
     """Hoofdfunctie: de dirigent die alles aanstuurt."""
     load_dotenv()
@@ -83,6 +108,14 @@ def main():
     kindle_email = os.getenv("KINDLE_EMAIL")  # optioneel
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
+
+    # Magazine-modus: bundel een vast datumbereik (bv. een hele maand), optioneel
+    # gefilterd op afzender, i.p.v. de dagelijkse 24-uurs editie.
+    is_magazine = os.getenv("MODE", "dagkrant").strip().lower() == "magazine"
+    magazine_sender = os.getenv("MAGAZINE_SENDER", "").strip()
+    magazine_from = os.getenv("MAGAZINE_FROM", "").strip()
+    magazine_to = os.getenv("MAGAZINE_TO", "").strip()
+    magazine_title = os.getenv("MAGAZINE_TITLE", "").strip()
 
     # Validatie
     missing = []
@@ -100,46 +133,77 @@ def main():
         logger.error("Maak een .env bestand aan op basis van .env.example")
         sys.exit(1)
 
+    if is_magazine and (not magazine_from or not magazine_to):
+        logger.error("Magazine-modus vereist MAGAZINE_FROM en MAGAZINE_TO (YYYY-MM-DD).")
+        sys.exit(1)
+
     logger.info("=" * 60)
-    logger.info("DE DAGKRANT - Dagelijkse nieuwsbundel")
+    if is_magazine:
+        logger.info("DE DAGKRANT - Magazine")
+    else:
+        logger.info("DE DAGKRANT - Dagelijkse nieuwsbundel")
     logger.info(f"Datum: {datetime.now(timezone.utc).strftime('%d %B %Y %H:%M UTC')}")
     logger.info("=" * 60)
 
     # --- Stap 1: Nieuwsbrieven ophalen ---
-    hours_back = _calculate_hours_back()
-    logger.info(f"\n📬 Stap 1: Nieuwsbrieven ophalen uit Gmail (laatste {hours_back} uur)...")
-    newsletters = fetch_newsletters(gmail_user, gmail_password, hours_back=hours_back)
+    if is_magazine:
+        since_dt = _parse_local_date(magazine_from)
+        until_dt = _parse_local_date(magazine_to) + timedelta(days=1)
+        filter_desc = f" (afzender/onderwerp bevat '{magazine_sender}')" if magazine_sender else ""
+        logger.info(
+            f"\n📬 Stap 1: Nieuwsbrieven ophalen uit Gmail "
+            f"(magazine: {magazine_from} t/m {magazine_to}{filter_desc})..."
+        )
+        newsletters = fetch_newsletters(
+            gmail_user, gmail_password,
+            since_date=since_dt, until_date=until_dt,
+            sender_filter=magazine_sender or None,
+        )
+    else:
+        hours_back = _calculate_hours_back()
+        logger.info(f"\n📬 Stap 1: Nieuwsbrieven ophalen uit Gmail (laatste {hours_back} uur)...")
+        newsletters = fetch_newsletters(gmail_user, gmail_password, hours_back=hours_back)
 
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
 
-    # Handmatig toegevoegde webartikelen (label: Dagkrant/Lezen)
-    logger.info(f"\n🔗 Stap 1b: Handmatige artikelen ophalen (label: Dagkrant/Lezen)...")
-    article_urls = fetch_article_urls(gmail_user, gmail_password, hours_back=hours_back)
-    for url in article_urls:
-        article = fetch_article(url)
-        if article:
-            newsletters.append(article)
-            logger.info(f"  Toegevoegd: '{article['subject'][:60]}'")
+    # Handmatig toegevoegde webartikelen (label: Dagkrant/Lezen) — niet relevant
+    # voor een themamagazine over een vast datumbereik.
+    if not is_magazine:
+        logger.info(f"\n🔗 Stap 1b: Handmatige artikelen ophalen (label: Dagkrant/Lezen)...")
+        article_urls = fetch_article_urls(gmail_user, gmail_password, hours_back=hours_back)
+        for url in article_urls:
+            article = fetch_article(url)
+            if article:
+                newsletters.append(article)
+                logger.info(f"  Toegevoegd: '{article['subject'][:60]}'")
 
     if not newsletters:
-        logger.info(f"Geen nieuwsbrieven of artikelen gevonden in de laatste {hours_back} uur. Klaar!")
+        if is_magazine:
+            logger.info("Geen nieuwsbrieven gevonden voor dit magazine-filter. Klaar!")
+        else:
+            logger.info(f"Geen nieuwsbrieven of artikelen gevonden in de laatste {hours_back} uur. Klaar!")
         return
 
     # Sorteer op datum (nieuwste eerst)
     newsletters.sort(key=lambda x: x.get("date", ""), reverse=True)
 
-    # Dedupliceer per afzender: maximaal 2 artikelen per afzender
-    MAX_PER_SENDER = 3
-    sender_counts: dict[str, int] = {}
-    filtered_by_sender = []
-    for nl in newsletters:
-        sender = nl.get("sender", "").strip()
-        count = sender_counts.get(sender, 0)
-        if count < MAX_PER_SENDER:
-            filtered_by_sender.append(nl)
-            sender_counts[sender] = count + 1
-        else:
-            logger.info(f"  ⏭ Overgeslagen (max {MAX_PER_SENDER}/afzender): '{nl['subject'][:60]}'")
+    # Dedupliceer per afzender: maximaal 2 artikelen per afzender.
+    # In magazine-modus is juist de bedoeling om alles van de gekozen periode/
+    # afzender te bundelen, dus geen limiet.
+    if is_magazine:
+        filtered_by_sender = newsletters
+    else:
+        MAX_PER_SENDER = 3
+        sender_counts: dict[str, int] = {}
+        filtered_by_sender = []
+        for nl in newsletters:
+            sender = nl.get("sender", "").strip()
+            count = sender_counts.get(sender, 0)
+            if count < MAX_PER_SENDER:
+                filtered_by_sender.append(nl)
+                sender_counts[sender] = count + 1
+            else:
+                logger.info(f"  ⏭ Overgeslagen (max {MAX_PER_SENDER}/afzender): '{nl['subject'][:60]}'")
     newsletters = filtered_by_sender
 
     # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
@@ -290,7 +354,17 @@ def main():
 
     # --- Stap 5: PDF samenstellen ---
     logger.info("\n📄 Stap 5: PDF genereren...")
-    cover_html = render_cover_page(newsletters, toc_entries)
+    if is_magazine:
+        masthead_title = magazine_title or "Het Magazine"
+        masthead_subtitle = "Themabundel" + (f" · {magazine_sender}" if magazine_sender else "")
+        period_label = f"{_format_dutch_date_only(magazine_from)} – {_format_dutch_date_only(magazine_to)}"
+        cover_html = render_cover_page(
+            newsletters, toc_entries,
+            masthead_title=masthead_title, masthead_subtitle=masthead_subtitle,
+            edition_label=period_label,
+        )
+    else:
+        cover_html = render_cover_page(newsletters, toc_entries)
     full_html = compose_full_html(cover_html, newsletters)
 
     # PDF opslaan in een tijdelijk bestand
@@ -319,6 +393,20 @@ def main():
 
         # --- Stap 6: E-mail verzenden ---
         logger.info("\n📧 Stap 6: E-mail verzenden...")
+        mail_kwargs = {}
+        if is_magazine:
+            mail_kwargs["subject"] = f"{masthead_title} — {period_label}"
+            mail_kwargs["body"] = (
+                f"Goedemiddag!\n\n"
+                f"Hierbij je magazine '{masthead_title}' ({period_label})"
+                + (f", afzender/onderwerp-filter: {magazine_sender}" if magazine_sender else "")
+                + f". {len(newsletters)} nieuwsbrie{'f' if len(newsletters) == 1 else 'ven'} gebundeld.\n\n"
+                f"Veel leesplezier!\n\n"
+                f"Met vriendelijke groet,\n"
+                f"De Dagkrant"
+            )
+            mail_kwargs["filename"] = f"Magazine_{_slugify(masthead_title)}_{magazine_from}_tot_{magazine_to}.pdf"
+
         send_email_with_pdf(
             pdf_path=pdf_path,
             sender_email=gmail_user,
@@ -326,6 +414,7 @@ def main():
             recipient_email=target_email,
             smtp_server=smtp_server,
             smtp_port=smtp_port,
+            **mail_kwargs,
         )
 
         recipients = [target_email]
@@ -340,6 +429,7 @@ def main():
                 recipient_email=kindle_email,
                 smtp_server=smtp_server,
                 smtp_port=smtp_port,
+                **mail_kwargs,
             )
             recipients.append(kindle_email)
 

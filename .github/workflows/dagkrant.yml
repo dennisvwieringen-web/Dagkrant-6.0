@@ -24,6 +24,13 @@ name: De Dagkrant - Nieuwsbundel
 # dag verstuurt de 14:30-dispatch en zet de markering; de late `schedule`-cron
 # ziet de cache-hit en slaat alles over. Beide triggers draaien dezelfde
 # workflow, dus de cache geldt voor allebei.
+#
+# MAGAZINE-MODUS (workflow_dispatch met mode=magazine): een handmatige,
+# ad-hoc bundel over een vast datumbereik (bv. "alle Google-nieuwsbrieven van
+# juni"), i.p.v. de dagelijkse 24-uurs editie. Draait via dezelfde workflow en
+# hetzelfde main.py, maar negeert de dagmarkering volledig — schrijft 'm niet
+# (zodat de normale dagkrant later gewoon nog verstuurt) en slaat 'm niet over
+# (zodat een magazine ook werkt op een dag dat de dagkrant al is verstuurd).
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -32,7 +39,32 @@ on:
     # komt van de lokale Taakplanner via workflow_dispatch. Wintertijd (CET):
     # zet dan op '0 16 * * 1,3,4,5'.
     - cron: '0 15 * * 1,3,4,5'
-  workflow_dispatch:  # ← primaire trigger (lokale Taakplanner) + handmatig
+  workflow_dispatch:  # ← primaire trigger (lokale Taakplanner) + handmatig + magazine
+    inputs:
+      mode:
+        description: 'Modus'
+        required: false
+        default: 'dagkrant'
+        type: choice
+        options:
+          - dagkrant
+          - magazine
+      sender_filter:
+        description: 'Magazine: afzender/onderwerp bevat (optioneel, bv. Google)'
+        required: false
+        default: ''
+      date_from:
+        description: 'Magazine: vanaf datum (YYYY-MM-DD)'
+        required: false
+        default: ''
+      date_to:
+        description: 'Magazine: tot datum (YYYY-MM-DD)'
+        required: false
+        default: ''
+      title:
+        description: 'Magazine: titel op de cover (optioneel)'
+        required: false
+        default: ''
 
 concurrency:
   group: dagkrant-edition
@@ -58,18 +90,18 @@ jobs:
           key: dagkrant-sent-${{ steps.date.outputs.today }}
 
       - name: Set up Python
-        if: steps.marker.outputs.cache-hit != 'true'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Install dependencies
-        if: steps.marker.outputs.cache-hit != 'true'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         run: pip install -r requirements.txt
 
       - name: Cache Playwright browsers
-        if: steps.marker.outputs.cache-hit != 'true'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         uses: actions/cache@v4
         id: playwright-cache
         with:
@@ -79,15 +111,15 @@ jobs:
             playwright-chromium-${{ runner.os }}-
 
       - name: Install Playwright system dependencies
-        if: steps.marker.outputs.cache-hit != 'true'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         run: playwright install-deps chromium
 
       - name: Install Playwright browser (skip on cache hit)
-        if: steps.marker.outputs.cache-hit != 'true' && steps.playwright-cache.outputs.cache-hit != 'true'
+        if: steps.playwright-cache.outputs.cache-hit != 'true' && (steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine')
         run: playwright install chromium
 
       - name: Run De Dagkrant
-        if: steps.marker.outputs.cache-hit != 'true'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -96,21 +128,26 @@ jobs:
           KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}
           SMTP_SERVER: smtp.gmail.com
           SMTP_PORT: '587'
+          MODE: ${{ github.event.inputs.mode || 'dagkrant' }}
+          MAGAZINE_SENDER: ${{ github.event.inputs.sender_filter }}
+          MAGAZINE_FROM: ${{ github.event.inputs.date_from }}
+          MAGAZINE_TO: ${{ github.event.inputs.date_to }}
+          MAGAZINE_TITLE: ${{ github.event.inputs.title }}
         run: cd src && python main.py
 
       # Markeer pas NA een geslaagde verzending. Faalt de run, dan blijft de
       # markering uit en kan een volgende trigger het opnieuw proberen.
       - name: Schrijf dagmarkering
-        if: steps.marker.outputs.cache-hit != 'true' && success()
+        if: success() && github.event.inputs.mode != 'magazine' && steps.marker.outputs.cache-hit != 'true'
         run: date > .sent-marker
 
       - name: Bewaar dagmarkering
-        if: steps.marker.outputs.cache-hit != 'true' && success()
+        if: success() && github.event.inputs.mode != 'magazine' && steps.marker.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .sent-marker
           key: dagkrant-sent-${{ steps.date.outputs.today }}
 
       - name: Al verstuurd vandaag — overgeslagen
-        if: steps.marker.outputs.cache-hit == 'true'
+        if: steps.marker.outputs.cache-hit == 'true' && github.event.inputs.mode != 'magazine'
         run: echo "Editie van ${{ steps.date.outputs.today }} is vandaag al verstuurd. Run overgeslagen."
