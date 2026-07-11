@@ -106,6 +106,9 @@ def main():
     openai_api_key = os.getenv("OPENAI_API_KEY")
     target_email = os.getenv("TARGET_EMAIL")
     kindle_email = os.getenv("KINDLE_EMAIL")  # optioneel
+    # Readwise Reader-feed: standaard aan (feed-adres is niet gevoelig), overschrijfbaar
+    # via env var. Zet op een lege string om de Readwise-bezorging uit te zetten.
+    readwise_email = os.getenv("READWISE_EMAIL", "readwisedvw@feed.readwise.io").strip()
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
 
@@ -432,6 +435,20 @@ def main():
                 **mail_kwargs,
             )
             recipients.append(kindle_email)
+
+        # Readwise Reader: stuur dezelfde PDF ook naar de Readwise-feed
+        if readwise_email:
+            logger.info(f"📖 Readwise: PDF verzenden naar {readwise_email}...")
+            send_email_with_pdf(
+                pdf_path=pdf_path,
+                sender_email=gmail_user,
+                sender_password=gmail_password,
+                recipient_email=readwise_email,
+                smtp_server=smtp_server,
+                smtp_port=smtp_port,
+                **mail_kwargs,
+            )
+            recipients.append(readwise_email)
 
         logger.info("\n" + "=" * 60)
         logger.info("DE DAGKRANT IS KLAAR!")

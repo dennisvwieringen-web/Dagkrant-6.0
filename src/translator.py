@@ -94,9 +94,11 @@ def translate_html(html_content: str, openai_api_key: str) -> str:
     """
     client = OpenAI(api_key=openai_api_key)
 
-    # Splits de HTML in behapbare stukken als het te groot is
-    # GPT-4o heeft een groot context window, maar we splitsen op ~12000 tekens
-    max_chunk_size = 12000
+    # Splits de HTML in behapbare stukken als het te groot is.
+    # Bewust ruim onder de output-tokenlimiet van gpt-4o-mini: bij ~8000 tekens
+    # invoer past de vertaling comfortabel binnen max_tokens, zodat het model niet
+    # halverwege afkapt (finish_reason="length") en er geen Engelse staart blijft staan.
+    max_chunk_size = 8000
 
     if len(html_content) <= max_chunk_size:
         return _translate_chunk(client, html_content)
@@ -112,51 +114,112 @@ def translate_html(html_content: str, openai_api_key: str) -> str:
     return "".join(translated_chunks)
 
 
-def _translate_chunk(client: OpenAI, html_chunk: str) -> str:
-    """Vertaal een enkel stuk HTML via de OpenAI API."""
-    try:
-        logger.debug(f"  Vertalen chunk van {len(html_chunk)} tekens...")
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Je bent een professionele vertaler die Engels naar idiomatisch "
-                        "Nederlands vertaalt voor een dagelijkse nieuwskrant.\n"
-                        "STRUCTUUR — verplicht:\n"
-                        "- Behoud ALLE HTML-tags, attributen en structuur exact.\n"
-                        "- Vertaal ALLEEN de zichtbare tekst, nooit CSS of URLs.\n"
-                        "- Geef ALLEEN de vertaalde HTML terug — geen uitleg, geen code-fences.\n\n"
-                        "TAAL — verplicht:\n"
-                        "- Schrijf vloeiend, idiomatisch Nederlands. Geen letterlijke vertalingen.\n"
-                        "- Vertaal NIET: URLs, e-mailadressen, merknamen, eigennamen, productnamen.\n"
-                        "- Gangbaar tech-jargon dat in het Nederlands gebruikelijk is blijft Engels: "
-                        "AI, startup, senior, product manager, podcast, pitch, sprint, feedback.\n"
-                        "- Vertaal anglicismen wél naar goed Nederlands:\n"
-                        "  'settle' → 'genoegen nemen met' (niet 'settelen')\n"
-                        "  'north star' → 'leidster' of 'kompas' (niet 'noordster')\n"
-                        "  'playbook' → 'aanpak' of 'werkwijze' (niet 'speelboek')\n"
-                        "  'insane' (informeel) → 'enorm' of 'extreem' (niet 'idioot')\n"
-                        "  'later-stage' → 'groeiende' of 'volwassen' (niet 'later-stage')\n"
-                        "  'tenure' → 'diensttijd' of 'periode' (niet 'tenure')\n"
-                        "  'leverage' (werkwoord) → 'benutten' of 'inzetten' (niet 'leveragen')\n"
-                        "- Behoud de toon van de auteur: informele stukken blijven informeel, "
-                        "analytische stukken blijven analytisch."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": html_chunk,
-                },
-            ],
-            temperature=0.3,
-            max_tokens=16000,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"OpenAI vertaalfout ({len(html_chunk)} tekens chunk): {e}")
-        return html_chunk  # Bij fout: origineel teruggeven
+_TRANSLATE_SYSTEM_PROMPT = (
+    "Je bent een professionele vertaler die Engels naar idiomatisch "
+    "Nederlands vertaalt voor een dagelijkse nieuwskrant.\n"
+    "STRUCTUUR — verplicht:\n"
+    "- Behoud ALLE HTML-tags, attributen en structuur exact.\n"
+    "- Vertaal ALLEEN de zichtbare tekst, nooit CSS of URLs.\n"
+    "- Geef ALLEEN de vertaalde HTML terug — geen uitleg, geen code-fences.\n"
+    "- Herhaal NOOIT de Engelse brontekst; geef uitsluitend de Nederlandse vertaling.\n\n"
+    "TAAL — verplicht:\n"
+    "- Vertaal ELKE Engelse zin; laat geen enkele Engelse zin onvertaald staan.\n"
+    "- Schrijf vloeiend, idiomatisch Nederlands. Geen letterlijke vertalingen.\n"
+    "- Vertaal NIET: URLs, e-mailadressen, merknamen, eigennamen, productnamen.\n"
+    "- Gangbaar tech-jargon dat in het Nederlands gebruikelijk is blijft Engels: "
+    "AI, startup, senior, product manager, podcast, pitch, sprint, feedback.\n"
+    "- Vertaal anglicismen wél naar goed Nederlands:\n"
+    "  'settle' → 'genoegen nemen met' (niet 'settelen')\n"
+    "  'north star' → 'leidster' of 'kompas' (niet 'noordster')\n"
+    "  'playbook' → 'aanpak' of 'werkwijze' (niet 'speelboek')\n"
+    "  'insane' (informeel) → 'enorm' of 'extreem' (niet 'idioot')\n"
+    "  'later-stage' → 'groeiende' of 'volwassen' (niet 'later-stage')\n"
+    "  'tenure' → 'diensttijd' of 'periode' (niet 'tenure')\n"
+    "  'leverage' (werkwoord) → 'benutten' of 'inzetten' (niet 'leveragen')\n"
+    "- Behoud de toon van de auteur: informele stukken blijven informeel, "
+    "analytische stukken blijven analytisch."
+)
+
+
+def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> str:
+    """
+    Vertaal een enkel stuk HTML via de OpenAI API.
+
+    Robuust tegen de twee manieren waarop een chunk stil Engels kon blijven:
+    (1) een API-fout of lege/None-respons die het origineel teruggaf, en
+    (2) een respons die (deels) onvertaald Engels bleef. Bij beide wordt opnieuw
+    geprobeerd (tot max_attempts). Pas als álle pogingen falen valt de functie
+    terug op het origineel — beter imperfect dan een crash, maar dat is nu de
+    uitzondering, niet de stille regel.
+    """
+    # Kan er überhaupt iets te vertalen zijn? Zo niet, dan is een 'nog Engels'-
+    # verificatie zinloos (korte code/URL-fragmenten geven vals alarm).
+    verify_language = _has_translatable_text(html_chunk)
+    last_result = html_chunk
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.debug(f"  Vertalen chunk van {len(html_chunk)} tekens (poging {attempt})...")
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT},
+                    {"role": "user", "content": html_chunk},
+                ],
+                temperature=0.3,
+                max_tokens=16000,
+            )
+            choice = response.choices[0]
+            content = choice.message.content
+
+            # None/lege content (bv. bij content-filter of afgekapt op token 0):
+            # behandel als fout zodat de retry aanslaat i.p.v. .strip() te laten crashen.
+            if not content or not content.strip():
+                raise ValueError("lege of ontbrekende respons van het model")
+            translated = content.strip()
+
+            # Truncatie: het model kapte af op de tokenlimiet. De staart is dan
+            # onvertaald/afgebroken. Kleinere chunk bij de volgende poging helpt niet
+            # (zelfde chunk), dus log het duidelijk maar accepteer wat er is.
+            if getattr(choice, "finish_reason", None) == "length":
+                logger.warning(
+                    f"  ⚠️ Vertaling afgekapt op tokenlimiet ({len(html_chunk)} tekens chunk) — "
+                    f"resultaat mogelijk onvolledig."
+                )
+
+            # Verifieer dat er daadwerkelijk vertaald is. Blijft het resultaat Engels,
+            # dan negeerde het model de opdracht — opnieuw proberen.
+            if verify_language and detect_language(translated) == "en":
+                logger.warning(
+                    f"  ⚠️ Chunk kwam nog als Engels terug (poging {attempt}/{max_attempts}) — opnieuw proberen."
+                )
+                last_result = translated  # bewaar de beste tot nu toe
+                continue
+
+            return translated
+
+        except Exception as e:
+            logger.warning(
+                f"  ⚠️ Vertaalpoging {attempt}/{max_attempts} mislukt "
+                f"({len(html_chunk)} tekens chunk): {e}"
+            )
+
+    logger.error(
+        f"OpenAI vertaling definitief niet gelukt na {max_attempts} pogingen "
+        f"({len(html_chunk)} tekens chunk) — beste beschikbare resultaat behouden."
+    )
+    return last_result
+
+
+def _has_translatable_text(html_chunk: str, min_words: int = 12) -> bool:
+    """
+    True als de chunk genoeg gewone tekstwoorden bevat om een taalverificatie
+    zinvol te maken. Voorkomt vals 'nog Engels'-alarm op stukken die vooral uit
+    URLs, code of losse merknamen bestaan.
+    """
+    text = BeautifulSoup(html_chunk, "html.parser").get_text(separator=" ", strip=True)
+    words = re.findall(r"\b[a-zA-Z]{2,}\b", text)
+    return len(words) >= min_words
 
 
 def _split_html(html_content: str, max_size: int) -> list[str]:

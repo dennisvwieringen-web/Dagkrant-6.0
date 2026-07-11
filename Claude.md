@@ -77,6 +77,7 @@ render_pdf() [Playwright Chromium, headless, A4, 60s timeout]
     ↓
 send_email_with_pdf() via SMTP → TARGET_EMAIL
 send_email_with_pdf() via SMTP → KINDLE_EMAIL (optioneel)
+send_email_with_pdf() via SMTP → READWISE_EMAIL (Readwise Reader-feed, standaard aan)
 ```
 
 ### Module responsibilities
@@ -162,6 +163,7 @@ Naast de dagelijkse 24-uurs editie kan dezelfde workflow ook een **magazine** ge
 
 1. **Empty content (solved):** `display:none` preview text and `&nbsp;` spacers inflated the character count past the 300-char threshold. Fixed via `_get_truly_visible_text()` which strips these before counting.
 2. **English content not translated (solved):** Substack HTML is one giant nested `<table>`. The old `_split_html()` produced a single chunk larger than GPT-4o-mini's output limit → silent fallback to English. Fixed by making `_split_html()` recursive (descends into oversized elements to find split points). `max_tokens=16000` added to prevent output truncation.
+3. **Mixed English/Dutch in one edition — "eerst Engels, daarna Nederlands" (solved):** met meerdere chunks per nieuwsbrief kon één chunk stil onvertaald (Engels) terugkomen — door een API-fout, een `None`/lege respons (`.strip()` op `None` → `AttributeError`), of doordat het model de opdracht negeerde — terwijl de andere chunks wél Nederlands waren. De oude `_translate_chunk()` ving elke fout af met `return html_chunk` (origineel) en verifieerde nooit of er echt vertaald was, dus glipte gedeeltelijk-Engels ongemerkt door (VANGNET B in `main.py` grijpt alléén bij een *lege* vertaling in, niet bij een *Engelse*). Opgelost door `_translate_chunk()` robuust te maken: **retries** (`max_attempts=3`), **`None`/lege respons afvangen**, **truncatie loggen** (`finish_reason=="length"`), en na afloop **verifiëren met `detect_language()`** dat het resultaat Nederlands is — anders opnieuw proberen. De taalverificatie wordt overgeslagen bij chunks met te weinig gewone woorden (`_has_translatable_text()`, drempel 12 woorden) om vals alarm op URL/code-fragmenten te voorkomen. `max_chunk_size` verlaagd van 12000 → 8000 tekens voor meer output-marge.
 
 ---
 
