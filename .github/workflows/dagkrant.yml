@@ -50,7 +50,7 @@ on:
           - dagkrant
           - magazine
       sender_filter:
-        description: 'Magazine: afzender/onderwerp bevat (optioneel, bv. Google)'
+        description: 'Magazine: afzender/onderwerp bevat (optioneel; meerdere met komma, bv. AI Report, NRC)'
         required: false
         default: ''
       date_from:

@@ -153,8 +153,10 @@ def fetch_newsletters(
     Standaard wordt `hours_back` gebruikt om het tijdvenster te bepalen (dagelijkse
     editie). Geef `since_date`/`until_date` expliciet mee om een vast datumbereik
     op te vragen (bv. voor een magazine over een hele maand) — dat overschrijft
-    `hours_back`. `sender_filter` (case-insensitive substring) beperkt het resultaat
-    tot e-mails waarvan de afzender of het onderwerp die tekst bevat.
+    `hours_back`. `sender_filter` beperkt het resultaat tot e-mails waarvan de
+    afzender of het onderwerp de tekst bevat (case-insensitive substring).
+    Meerdere nieuwsbrieven tegelijk kan met komma's: "AI Report, Matthijs van
+    Nieuwkerk" matcht e-mails die aan minstens één van de termen voldoen (OR).
 
     Returns:
         Lijst van dicts met keys: subject, sender, date, html_content, plain_content
@@ -273,10 +275,16 @@ def fetch_newsletters(
                         # Extraheer de echte afzender bij doorgestuurde e-mails
                         sender = extract_real_sender(plain_content, html_content, envelope_sender)
 
-                        # Magazine-modus: filter op afzender/onderwerp (case-insensitive substring)
-                        if sender_filter and sender_filter.lower() not in sender.lower() \
-                                and sender_filter.lower() not in subject.lower():
-                            continue
+                        # Magazine-modus: filter op afzender/onderwerp (case-insensitive
+                        # substring). Komma's scheiden meerdere termen — een e-mail
+                        # hoeft maar aan één term te voldoen (OR), zodat één magazine
+                        # meerdere nieuwsbrieven kan bundelen.
+                        if sender_filter:
+                            terms = [t.strip().lower() for t in sender_filter.split(",") if t.strip()]
+                            if terms and not any(
+                                t in sender.lower() or t in subject.lower() for t in terms
+                            ):
+                                continue
 
                         newsletters.append({
                             "subject": subject,
