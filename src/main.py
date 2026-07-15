@@ -220,6 +220,12 @@ def main():
     logger.info("\n🧹 Stap 2-3: Opschonen, dedupliceren, detecteren en vertalen...")
 
     processed = []
+    # Zodra OpenAI permanent uitvalt (krediet op / key ongeldig) heeft verder
+    # proberen geen zin: elke volgende aanroep faalt identiek. We onthouden dat,
+    # laten de Engelse artikelen ongewijzigd staan (niet droppen) en slaan één
+    # luide waarschuwing op voor aan het eind. Bewuste keuze: liever een (deels)
+    # Engelse krant dan helemaal geen krant.
+    openai_down = False
     for i, nl in enumerate(newsletters):
         subject = nl.get("subject", "(Onbekend)")
         try:
@@ -270,27 +276,46 @@ def main():
             nl["was_translated"] = (lang == "en")
             logger.info(f"    Taal: {lang.upper()}")
 
-            if lang == "en":
+            if lang == "en" and openai_down:
+                # OpenAI is deze run al uitgevallen — niet opnieuw proberen, het
+                # Engelse origineel blijft gewoon staan.
+                nl["was_translated"] = False
+                logger.warning(
+                    f"    ⚠️ OpenAI onbereikbaar — '{subject}' blijft Engels."
+                )
+            elif lang == "en":
                 logger.info(f"    Vertalen naar Nederlands...")
                 pre_translation_html = nl["html_content"]
-                translated = translate_html(nl["html_content"], openai_api_key)
-                # Vertaler kan code-fence artefacten toevoegen (```html ... ```)
-                translated = strip_ai_artifacts(translated)
-
-                # VANGNET B: als de vertaling (bijna) leeg terugkomt terwijl het
-                # Engelse origineel wél inhoud had, behoud dan het origineel i.p.v.
-                # het artikel te droppen. Engels lezen is beter dan een leeg artikel
-                # (geobserveerd bij o.a. The New Yorker).
-                if len(_get_truly_visible_text(translated)) >= 100:
-                    nl["html_content"] = translated
-                    logger.info(f"    Vertaling voltooid.")
-                else:
-                    nl["html_content"] = pre_translation_html
+                try:
+                    translated = translate_html(nl["html_content"], openai_api_key)
+                except OpenAIUnavailableError as e:
+                    # Krediet op / key ongeldig: dit raakt élk artikel, niet alleen
+                    # dit ene. Behoud het Engelse origineel (niet droppen) en onthoud
+                    # dat OpenAI weg is, zodat de rest niet nutteloos opnieuw probeert.
+                    openai_down = True
                     nl["was_translated"] = False
                     logger.warning(
-                        f"    ↩ '{subject}': vertaling leverde lege inhoud — "
-                        f"behoud het Engelse origineel."
+                        f"    ⚠️ OpenAI onbereikbaar ({e}) — '{subject}' blijft "
+                        f"Engels. Resterende artikelen worden ook niet vertaald."
                     )
+                else:
+                    # Vertaler kan code-fence artefacten toevoegen (```html ... ```)
+                    translated = strip_ai_artifacts(translated)
+
+                    # VANGNET B: als de vertaling (bijna) leeg terugkomt terwijl het
+                    # Engelse origineel wél inhoud had, behoud dan het origineel i.p.v.
+                    # het artikel te droppen. Engels lezen is beter dan een leeg artikel
+                    # (geobserveerd bij o.a. The New Yorker).
+                    if len(_get_truly_visible_text(translated)) >= 100:
+                        nl["html_content"] = translated
+                        logger.info(f"    Vertaling voltooid.")
+                    else:
+                        nl["html_content"] = pre_translation_html
+                        nl["was_translated"] = False
+                        logger.warning(
+                            f"    ↩ '{subject}': vertaling leverde lege inhoud — "
+                            f"behoud het Engelse origineel."
+                        )
 
             # FINALE VEILIGHEIDSCHECK: meet de echt zichtbare tekst na ALLE
             # verwerking (cleaning + deduplicate_title + vertaling).
@@ -306,13 +331,17 @@ def main():
 
             processed.append(nl)
 
-        except OpenAIUnavailableError:
-            # Krediet op of key ongeldig: dit raakt élk artikel, niet alleen dit
-            # ene. Niet doorgaan (dan zou de rest van de editie stil in het Engels
-            # verschijnen) maar de hele run laten falen — dat is zichtbaar in
-            # GitHub Actions én stopt de dagmarkering, zodat een latere geslaagde
-            # run de krant alsnog kan versturen.
-            raise
+        except OpenAIUnavailableError as e:
+            # Vangnet: de vertaling vangt dit normaal al inline af (Engels behouden).
+            # Mocht een andere OpenAI-aanroep binnen de loop 'm toch opgooien, dan
+            # breken we de editie NIET af — we onthouden de uitval en gaan door.
+            openai_down = True
+            nl["was_translated"] = False
+            logger.warning(
+                f"  ⚠️ OpenAI onbereikbaar ({e}) — '{subject}' blijft Engels."
+            )
+            processed.append(nl)
+            continue
 
         except Exception as e:
             logger.error(f"  ❌ FOUT bij verwerken '{subject}': {e}")
@@ -342,10 +371,15 @@ def main():
             except Exception:
                 pass
 
-            toc_data = generate_toc_entry(
-                nl["subject"], nl["sender"], openai_api_key,
-                content_snippet=snippet,
-            )
+            if openai_down:
+                # OpenAI is deze run al uitgevallen — geen AI-titel/beschrijving
+                # meer proberen, val terug op het onderwerp.
+                toc_data = {"short_title": nl["subject"][:50], "description": ""}
+            else:
+                toc_data = generate_toc_entry(
+                    nl["subject"], nl["sender"], openai_api_key,
+                    content_snippet=snippet,
+                )
             toc_entries.append({
                 "subject": nl["subject"],
                 "sender": nl["sender"],
@@ -357,6 +391,22 @@ def main():
             # zo verschijnt er nooit een Engelse kop boven een vertaald artikel.
             nl["display_subject"] = toc_data["short_title"]
             logger.info(f"  TOC: '{toc_data['short_title']}'")
+        except OpenAIUnavailableError as e:
+            # Krediet raakte tijdens de TOC-stap op (geen enkel artikel was Engels,
+            # dus niet eerder gedetecteerd). Onthoud het en val terug op het onderwerp.
+            openai_down = True
+            logger.warning(
+                f"  ⚠️ OpenAI onbereikbaar ({e}) — TOC voor '{nl['subject']}' "
+                f"zonder AI-titel."
+            )
+            toc_entries.append({
+                "subject": nl["subject"],
+                "sender": nl["sender"],
+                "short_title": nl["subject"][:50],
+                "description": "",
+                "was_translated": nl.get("was_translated", False),
+            })
+            nl["display_subject"] = nl["subject"]
         except Exception as e:
             logger.error(f"  Fout bij TOC entry voor '{nl['subject']}': {e}")
             toc_entries.append({
@@ -368,6 +418,28 @@ def main():
             })
             nl["display_subject"] = nl["subject"]
 
+    # Eén gebundelde, luide waarschuwing als OpenAI is uitgevallen. De editie gaat
+    # bewust wél de deur uit (deels Engels), maar dit mag niet ongemerkt blijven —
+    # zowel in de log (voor de cloud-run) als zichtbaar op de voorpagina (voor de
+    # geprinte krant, waar de log niet te zien is).
+    cover_warning = None
+    if openai_down:
+        untranslated = sum(1 for nl in newsletters if not nl.get("was_translated", False)
+                           and detect_language(nl["html_content"]) == "en")
+        logger.warning("=" * 60)
+        logger.warning("⚠️ LET OP: OpenAI viel uit tijdens deze run.")
+        logger.warning("   De krant is verstuurd, maar Engelse nieuwsbrieven zijn")
+        logger.warning("   NIET vertaald (en TOC-titels vielen terug op het onderwerp).")
+        logger.warning(f"   Vermoedelijk onvertaald gebleven: ~{untranslated} artikel(en).")
+        logger.warning("   → Vul krediet aan op "
+                       "https://platform.openai.com/settings/organization/billing")
+        logger.warning("=" * 60)
+        cover_warning = (
+            f"Deze editie is deels onvertaald: de automatische vertaling was tijdens "
+            f"het samenstellen niet beschikbaar, waardoor ~{untranslated} Engelse "
+            f"nieuwsbrief(ven) in het Engels zijn gebleven."
+        )
+
     # --- Stap 5: PDF samenstellen ---
     logger.info("\n📄 Stap 5: PDF genereren...")
     if is_magazine:
@@ -378,9 +450,12 @@ def main():
             newsletters, toc_entries,
             masthead_title=masthead_title, masthead_subtitle=masthead_subtitle,
             edition_label=period_label,
+            translation_warning=cover_warning,
         )
     else:
-        cover_html = render_cover_page(newsletters, toc_entries)
+        cover_html = render_cover_page(
+            newsletters, toc_entries, translation_warning=cover_warning,
+        )
     full_html = compose_full_html(cover_html, newsletters)
 
     # PDF opslaan in een tijdelijk bestand
@@ -475,26 +550,8 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except OpenAIUnavailableError as e:
-        # Krediet op / key ongeldig: laat de run zichtbaar falen (exit 1) i.p.v.
-        # een onvertaalde krant te versturen. De dagmarkering wordt alleen bij
-        # success() geschreven, dus een latere geslaagde run mag het overdoen.
-        logger.error("=" * 60)
-        logger.error("❌ VERTALING GESTOPT: OpenAI is onbereikbaar.")
-        logger.error(f"   Oorzaak: {e}")
-        logger.error(
-            "   Dit is vrijwel zeker een lege OpenAI-creditbalans of een "
-            "ongeldige/verlopen API-key."
-        )
-        logger.error(
-            "   → Vul krediet aan op https://platform.openai.com/settings/organization/billing "
-            "of ververs OPENAI_API_KEY in de GitHub repository secrets."
-        )
-        logger.error(
-            "   De krant is BEWUST niet verstuurd om te voorkomen dat een "
-            "onvertaalde (Engelse) editie de deur uitgaat."
-        )
-        logger.error("=" * 60)
-        sys.exit(1)
+    # OpenAIUnavailableError wordt bewust NIET hier afgevangen om de run te laten
+    # falen: bij credit-op verschijnt de krant (deels Engels) mét een luide
+    # waarschuwing in de log — liever een imperfecte krant dan geen krant. De
+    # uitval wordt inline afgehandeld in main() (zie `openai_down`).
+    main()

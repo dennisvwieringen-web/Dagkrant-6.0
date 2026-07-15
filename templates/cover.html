@@ -162,12 +162,30 @@
             letter-spacing: 1px;
             text-transform: uppercase;
         }
+        .cover-warning {
+            width: 100%;
+            box-sizing: border-box;
+            margin: 10px 0 0 0;
+            padding: 8px 14px;
+            border: 1.5px solid #b0842a;
+            border-left: 6px solid #b0842a;
+            background: #fdf6e3;
+            color: #7a5a12;
+            font-family: Georgia, 'Times New Roman', serif;
+            font-size: 12px;
+            line-height: 1.4;
+            text-align: left;
+        }
     </style>
 
     <div class="cover-masthead">
         <h1 class="cover-title">{{ masthead_title or "De Dagkrant" }}</h1>
         <p class="cover-subtitle">{{ masthead_subtitle or "Jouw persoonlijke nieuwsbundel, dagelijks samengesteld" }}</p>
     </div>
+
+    {% if translation_warning %}
+    <div class="cover-warning">⚠️ {{ translation_warning }}</div>
+    {% endif %}
 
     <div class="cover-meta">
         <span>{{ date }}</span>

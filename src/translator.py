@@ -205,7 +205,7 @@ def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> 
         try:
             logger.debug(f"  Vertalen chunk van {len(html_chunk)} tekens (poging {attempt})...")
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT},
                     {"role": "user", "content": html_chunk},

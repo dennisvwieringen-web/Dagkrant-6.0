@@ -60,6 +60,7 @@ def render_cover_page(
     masthead_title: str | None = None,
     masthead_subtitle: str | None = None,
     edition_label: str | None = None,
+    translation_warning: str | None = None,
 ) -> str:
     """
     Render het voorblad + inhoudsopgave als HTML.
@@ -70,6 +71,9 @@ def render_cover_page(
         masthead_title: Optionele titel i.p.v. "De Dagkrant" (bv. voor een magazine).
         masthead_subtitle: Optionele ondertitel i.p.v. de standaardtekst.
         edition_label: Optioneel label i.p.v. "Editie #N" (bv. een datumbereik).
+        translation_warning: Optionele waarschuwingstekst die als banner boven op de
+            voorpagina verschijnt (bv. wanneer OpenAI uitviel en Engelse artikelen
+            onvertaald bleven). Leeg/None = geen banner.
 
     Returns:
         HTML-string van het voorblad.
@@ -86,6 +90,7 @@ def render_cover_page(
         masthead_title=masthead_title,
         masthead_subtitle=masthead_subtitle,
         edition_label=edition_label,
+        translation_warning=translation_warning,
     )
 
 
