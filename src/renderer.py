@@ -12,6 +12,7 @@ import tempfile
 from datetime import datetime, timezone
 
 from jinja2 import Environment, FileSystemLoader
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 # Nederlandse dag- en maandnamen (onafhankelijk van systeemlocale)
@@ -360,14 +361,28 @@ def render_pdf(html_content: str, output_path: str) -> str:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
-            # Timeout op 60s: grote edities met veel externe afbeeldingen
-            # kunnen langer duren dan de Playwright-default van 30s.
+            # Laad de HTML. Bewust NIET op "networkidle" wachten als harde eis:
+            # bij grote edities met veel externe afbeeldingen/trackers wordt
+            # "netwerk-stil" soms nooit bereikt (één traag ladende resource houdt
+            # het open), waarna goto() na 60s crasht en de HELE PDF-render faalt
+            # (geobserveerd 14 juli 2026, editie 560). We laden daarom op
+            # "domcontentloaded" en geven daarna het netwerk een ruime, maar
+            # begrensde kans om tot rust te komen — een trage afbeelding mag de
+            # krant niet meer tegenhouden.
             page.goto(
                 f"file:///{temp_html_path}",
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
                 timeout=60000,
             )
-            # Wacht even zodat alle afbeeldingen geladen kunnen worden
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+            except PlaywrightTimeoutError:
+                logger.warning(
+                    "  ⚠️ Netwerk werd niet stil binnen 30s — render toch door "
+                    "(trage/hangende externe afbeelding). PDF kan enkele "
+                    "afbeeldingen missen, maar de krant komt eruit."
+                )
+            # Extra buffer zodat afbeeldingen die net binnen zijn nog kunnen tekenen.
             page.wait_for_timeout(2000)
 
             # Screenshot van voorblad voor Kindle-bibliotheekthumbnail (A4-breedte viewport)

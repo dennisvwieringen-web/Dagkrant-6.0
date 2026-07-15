@@ -7,11 +7,50 @@ met behoud van HTML-structuur en originele schrijfstijl/toon.
 
 import logging
 import re
+import time
 
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+
+class OpenAIUnavailableError(RuntimeError):
+    """
+    OpenAI is structureel onbereikbaar: het krediet is op, de API-key is ongeldig
+    of het account is geblokkeerd. Retryen heeft dan geen enkele zin — elke
+    volgende aanroep faalt identiek.
+
+    Dit onderscheid bestaat omdat de krant maandenlang stil in het Engels kon
+    verschijnen: `insufficient_quota` werd afgevangen als "gewone" fout, drie keer
+    opnieuw geprobeerd en daarna viel de vertaling terug op het origineel — zonder
+    dat iemand het merkte. Deze fout wordt bewust NIET binnen de module afgevangen,
+    zodat main.py de hele editie kan markeren als "onvertaald" en luid alarm slaat.
+    """
+
+
+# Foutcodes waarbij opnieuw proberen kansloos is (i.t.t. een tijdelijke rate limit,
+# een timeout of een 5xx aan de kant van OpenAI).
+_PERMANENT_ERROR_MARKERS = (
+    "insufficient_quota",
+    "invalid_api_key",
+    "account_deactivated",
+    "billing_hard_limit_reached",
+)
+
+
+def _is_permanent_error(exc: Exception) -> bool:
+    """
+    True als deze OpenAI-fout niet vanzelf overgaat (krediet op, key ongeldig).
+
+    Let op: een 429 is dubbelzinnig. 'rate_limit_exceeded' is tijdelijk (even
+    wachten helpt), 'insufficient_quota' is permanent (er moet geld bij). Daarom
+    kijken we naar de foutcode in de body, niet alleen naar de HTTP-status.
+    """
+    if getattr(exc, "status_code", None) in (401, 403):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _PERMANENT_ERROR_MARKERS)
 
 # Heuristiek voor taaldetectie op basis van veelvoorkomende woorden.
 # Let op: "is" en "in" zijn bewust NIET in de Engels-markers opgenomen —
@@ -151,6 +190,11 @@ def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> 
     geprobeerd (tot max_attempts). Pas als álle pogingen falen valt de functie
     terug op het origineel — beter imperfect dan een crash, maar dat is nu de
     uitzondering, niet de stille regel.
+
+    Uitzondering: bij een permanente fout (krediet op, key ongeldig) wordt géén
+    poging herhaald en gaat er een OpenAIUnavailableError omhoog. Retryen zou daar
+    alleen tijd kosten, en het stilzwijgend terugvallen op het Engelse origineel is
+    precies hoe de krant onopgemerkt onvertaald kon blijven.
     """
     # Kan er überhaupt iets te vertalen zijn? Zo niet, dan is een 'nog Engels'-
     # verificatie zinloos (korte code/URL-fragmenten geven vals alarm).
@@ -161,7 +205,7 @@ def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> 
         try:
             logger.debug(f"  Vertalen chunk van {len(html_chunk)} tekens (poging {attempt})...")
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT},
                     {"role": "user", "content": html_chunk},
@@ -198,11 +242,21 @@ def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> 
 
             return translated
 
+        except OpenAIUnavailableError:
+            raise
+
         except Exception as e:
+            if _is_permanent_error(e):
+                raise OpenAIUnavailableError(str(e)) from e
+
             logger.warning(
                 f"  ⚠️ Vertaalpoging {attempt}/{max_attempts} mislukt "
                 f"({len(html_chunk)} tekens chunk): {e}"
             )
+            if attempt < max_attempts:
+                # Exponentiële backoff: een tijdelijke rate limit of 5xx is meestal
+                # binnen enkele seconden over. Direct opnieuw vuren maakt het erger.
+                time.sleep(2**attempt)
 
     logger.error(
         f"OpenAI vertaling definitief niet gelukt na {max_attempts} pogingen "
@@ -325,5 +379,7 @@ def generate_toc_entry(
         return {"short_title": short_title, "description": description}
 
     except Exception as e:
+        if _is_permanent_error(e):
+            raise OpenAIUnavailableError(str(e)) from e
         logger.error(f"Fout bij genereren TOC entry: {e}")
         return {"short_title": subject, "description": ""}

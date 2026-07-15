@@ -24,7 +24,12 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters, fetch_article_urls
 from web_article import fetch_article
-from translator import detect_language, generate_toc_entry, translate_html
+from translator import (
+    OpenAIUnavailableError,
+    detect_language,
+    generate_toc_entry,
+    translate_html,
+)
 from cleaner import clean_html, minimal_clean, deduplicate_title, is_website_template, strip_ai_artifacts
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
 
@@ -301,6 +306,14 @@ def main():
 
             processed.append(nl)
 
+        except OpenAIUnavailableError:
+            # Krediet op of key ongeldig: dit raakt élk artikel, niet alleen dit
+            # ene. Niet doorgaan (dan zou de rest van de editie stil in het Engels
+            # verschijnen) maar de hele run laten falen — dat is zichtbaar in
+            # GitHub Actions én stopt de dagmarkering, zodat een latere geslaagde
+            # run de krant alsnog kan versturen.
+            raise
+
         except Exception as e:
             logger.error(f"  ❌ FOUT bij verwerken '{subject}': {e}")
             logger.error(f"     Deze nieuwsbrief wordt OVERGESLAGEN, de rest gaat door.")
@@ -462,4 +475,26 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except OpenAIUnavailableError as e:
+        # Krediet op / key ongeldig: laat de run zichtbaar falen (exit 1) i.p.v.
+        # een onvertaalde krant te versturen. De dagmarkering wordt alleen bij
+        # success() geschreven, dus een latere geslaagde run mag het overdoen.
+        logger.error("=" * 60)
+        logger.error("❌ VERTALING GESTOPT: OpenAI is onbereikbaar.")
+        logger.error(f"   Oorzaak: {e}")
+        logger.error(
+            "   Dit is vrijwel zeker een lege OpenAI-creditbalans of een "
+            "ongeldige/verlopen API-key."
+        )
+        logger.error(
+            "   → Vul krediet aan op https://platform.openai.com/settings/organization/billing "
+            "of ververs OPENAI_API_KEY in de GitHub repository secrets."
+        )
+        logger.error(
+            "   De krant is BEWUST niet verstuurd om te voorkomen dat een "
+            "onvertaalde (Engelse) editie de deur uitgaat."
+        )
+        logger.error("=" * 60)
+        sys.exit(1)
