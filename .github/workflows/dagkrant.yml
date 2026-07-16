@@ -1,11 +1,11 @@
 name: De Dagkrant - Nieuwsbundel
 
-# ─────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # RICHTTIJD: KRANT KLAAR OM 15:00 CEST
 #
 # PRIMAIRE TRIGGER: een Windows Taakplanner-taak ("Dagkrant-1500") op de pc van
 # Dennis roept om 14:30 (ma/wo/do/vr) via run_dagkrant.ps1 de GitHub-API
-# `workflow_dispatch` aan. Die start binnen seconden — GEEN GitHub-wachtrij — en
+# `workflow_dispatch` aan. Die start binnen seconden â GEEN GitHub-wachtrij â en
 # de krant wordt vervolgens HIER IN DE CLOUD opgehaald, vertaald, gerenderd en
 # gemaild. De trigger staat op 14:30 (en niet 15:00) omdat de cloud-run zelf
 # enkele tot ~tientallen minuten kost (vooral het vertalen); zo is de krant rond
@@ -13,7 +13,7 @@ name: De Dagkrant - Nieuwsbundel
 # netwerk blokkeert de mailpoorten (IMAP 993 / SMTP 587); alleen HTTPS (443)
 # werkt, genoeg om deze cloud-run aan te sturen. Authenticatie hergebruikt het
 # token uit Git Credential Manager (geen aparte PAT). Voorwaarde: pc aan +
-# ingelogd om 14:30 — geldt, want de krant wordt op het werk geprint.
+# ingelogd om 14:30 â geldt, want de krant wordt op het werk geprint.
 #
 # ACHTERVANG: de `schedule`-cron hieronder. GitHub draait scheduled-cron op
 # best-effort basis en stelt 'm vaak uren uit (geobserveerd: 18:33 CEST), dus
@@ -28,18 +28,18 @@ name: De Dagkrant - Nieuwsbundel
 # MAGAZINE-MODUS (workflow_dispatch met mode=magazine): een handmatige,
 # ad-hoc bundel over een vast datumbereik (bv. "alle Google-nieuwsbrieven van
 # juni"), i.p.v. de dagelijkse 24-uurs editie. Draait via dezelfde workflow en
-# hetzelfde main.py, maar negeert de dagmarkering volledig — schrijft 'm niet
+# hetzelfde main.py, maar negeert de dagmarkering volledig â schrijft 'm niet
 # (zodat de normale dagkrant later gewoon nog verstuurt) en slaat 'm niet over
 # (zodat een magazine ook werkt op een dag dat de dagkrant al is verstuurd).
-# ─────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 on:
   schedule:
-    # ACHTERVANG — bewust laat (~17:00 CEST zomertijd). De stipte 14:30-trigger
+    # ACHTERVANG â bewust laat (~17:00 CEST zomertijd). De stipte 14:30-trigger
     # komt van de lokale Taakplanner via workflow_dispatch. Wintertijd (CET):
     # zet dan op '0 16 * * 1,3,4,5'.
-    - cron: '0 15 * * 1,3,4,5'
-  workflow_dispatch:  # ← primaire trigger (lokale Taakplanner) + handmatig + magazine
+    - cron: '0 8 * * 0,1,2,3,4,5,6'
+  workflow_dispatch:  # â primaire trigger (lokale Taakplanner) + handmatig + magazine
     inputs:
       mode:
         description: 'Modus'
@@ -148,6 +148,6 @@ jobs:
           path: .sent-marker
           key: dagkrant-sent-${{ steps.date.outputs.today }}
 
-      - name: Al verstuurd vandaag — overgeslagen
+      - name: Al verstuurd vandaag â overgeslagen
         if: steps.marker.outputs.cache-hit == 'true' && github.event.inputs.mode != 'magazine'
         run: echo "Editie van ${{ steps.date.outputs.today }} is vandaag al verstuurd. Run overgeslagen."
