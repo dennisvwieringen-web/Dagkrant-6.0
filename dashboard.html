@@ -21,7 +21,7 @@
         let t = m && THEMES.includes(m[1]) ? m[1] : null;
         if (t) { try { localStorage.setItem('dagkrant_theme', t); } catch {} }
         else   { try { t = localStorage.getItem('dagkrant_theme'); } catch {} }
-        if (!THEMES.includes(t)) t = 'sepia';
+        if (!THEMES.includes(t)) t = 'nord'; // default = Nord, net als de app
         document.documentElement.setAttribute('data-theme', t);
       }
       applyTheme();
@@ -31,10 +31,13 @@
   <style>
     :root {
       /* Tokens 1:1 overgenomen uit de Bureaublad App (index.css). Het dashboard
-         spiegelt het volledige themasysteem van de app: sepia (default), nord,
+         spiegelt het volledige themasysteem van de app: sepia, nord (default),
          mono, glass en workspace. Zelfde tokennamen, zelfde waarden — de app
          geeft zijn actieve thema door via de URL-hash (zie script hierboven),
-         zodat beide altijd in sync zijn, ongeacht welk thema Dennis kiest. */
+         zodat beide altijd in sync zijn, ongeacht welk thema Dennis kiest.
+         NB: :root bevat de sepia-tokens als basiswaarden; het inline script in
+         <head> zet data-theme vóór de eerste paint, dus de nord-override is
+         altijd actief tenzij expliciet een ander thema is doorgegeven. */
       --sepia-50:  #fdfcf8;
       --sepia-100: #faf8f3;
       --sepia-200: #f5f0e8;
