@@ -119,6 +119,8 @@ Public utility functions: `is_website_template()`, `deduplicate_title()`, `strip
 
 | Constant | Value | Purpose |
 |---|---|---|
+| `_HOURS_BACK` | 72 | Terugkijkvenster dagkrant; verzonden-administratie voorkomt duplicaten |
+| `_SEEN_RETENTION_DAYS` | 8 | Bewaartermijn verzonden-administratie (ruim boven het venster) |
 | `MAX_PER_SENDER` | 3 | Max articles per unique sender per edition |
 | min visible text | 300 chars | Articles below this after cleaning are skipped (early check) |
 | min final text | 100 chars | Articles below this after ALL processing are skipped (final safety net) |
@@ -129,7 +131,7 @@ Public utility functions: `is_website_template()`, `deduplicate_title()`, `strip
 
 **Workflow file:** `.github/workflows/dagkrant.yml` · **Lokale trigger:** `run_dagkrant.ps1`
 
-**Richttijd: krant klaar om 15:00 CEST (ma/wo/do/vr).** Altijd 24 uur terugkijken. **De pijplijn draait altijd in de cloud (GitHub Actions); de pc start die alleen stipt op tijd.**
+**Richttijd: krant klaar om 15:00 CEST (ma/wo/do/vr).** **Terugkijkvenster: 72 uur** (sinds juli 2026; was 24) — Dennis labelt nieuwsbrieven handmatig, en met 24 uur viel een mail die pas een dag later z'n label kreeg buiten elk venster. De **verzonden-administratie** (message-id/URL → verzenddatum, in de Actions-cache onder key `dagkrant-seen-<run_id>`, `restore-keys: dagkrant-seen-` pakt de recentste; lokaal `logs/seen_ids.json`, pad via env `SEEN_IDS_FILE`) voorkomt duplicaten tussen edities. Regels: registratie gebeurt pas ná geslaagde verzending; álle meegewogen mails tellen als gedekt (ook wat door limieten/contentchecks afviel — elke mail krijgt precies één kans); webartikelen (stap 1b) worden op URL geregistreerd; magazine-runs raken de administratie niet aan; eerste run zonder administratie markeert mails ouder dan 24u als al-gedekt (overgangsregel tegen een eenmalige duplicatengolf). **De pijplijn draait altijd in de cloud (GitHub Actions); de pc start die alleen stipt op tijd.**
 
 **Trigger-architectuur (waarom dit zo is):** Een **Windows Taakplanner-taak `Dagkrant-1500`** op de pc van Dennis (ma/wo/do/vr, **14:30**) draait `run_dagkrant.ps1`, dat via de GitHub-API `workflow_dispatch` aanroept — die start de cloud-run binnen seconden, zonder GitHub-wachtrij. De krant wordt dus volledig in de cloud opgehaald, vertaald, gerenderd en gemaild. De trigger staat op 14:30 (niet 15:00) omdat de cloud-run zelf enkele tot ~tientallen minuten kost (vooral het vertalen); zo is de krant rond de **richttijd 15:00** binnen. Voorwaarde: pc aan + ingelogd om 14:30 (geldt, want de krant wordt op het werk geprint).
 

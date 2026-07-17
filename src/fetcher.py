@@ -349,6 +349,7 @@ def fetch_newsletters(
                             "sender": sender,
                             "date": parsed_date.isoformat(),
                             "label": folder_label,
+                            "message_id": message_id,
                             "html_content": html_content,
                             "plain_content": plain_content,
                         })

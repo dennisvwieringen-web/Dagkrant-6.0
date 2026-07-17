@@ -89,6 +89,21 @@ jobs:
           path: .sent-marker
           key: dagkrant-sent-${{ steps.date.outputs.today }}
 
+      # Verzonden-administratie: message-id's van mails die al in een eerdere
+      # editie zaten. Nodig omdat het terugkijkvenster 72 uur is (laat-gelabelde
+      # mails komen alsnog mee) — zonder deze administratie zou elke mail drie
+      # dagen achter elkaar in de krant staan. De key is per run uniek zodat de
+      # save-stap altijd een verse snapshot wegschrijft; restore-keys pakt de
+      # meest recente. Magazine-runs gebruiken dit niet (main.py negeert het).
+      - name: Herstel verzonden-administratie (72u-venster)
+        if: steps.marker.outputs.cache-hit != 'true' && github.event.inputs.mode != 'magazine'
+        uses: actions/cache/restore@v4
+        with:
+          path: seen_ids.json
+          key: dagkrant-seen-${{ github.run_id }}
+          restore-keys: |
+            dagkrant-seen-
+
       - name: Set up Python
         if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         uses: actions/setup-python@v5
@@ -133,6 +148,7 @@ jobs:
           MAGAZINE_FROM: ${{ github.event.inputs.date_from }}
           MAGAZINE_TO: ${{ github.event.inputs.date_to }}
           MAGAZINE_TITLE: ${{ github.event.inputs.title }}
+          SEEN_IDS_FILE: ${{ github.workspace }}/seen_ids.json
         run: cd src && python main.py
 
       # Markeer pas NA een geslaagde verzending. Faalt de run, dan blijft de
@@ -147,6 +163,16 @@ jobs:
         with:
           path: .sent-marker
           key: dagkrant-sent-${{ steps.date.outputs.today }}
+
+      # Bewaar de bijgewerkte verzonden-administratie (main.py schrijft die na
+      # een geslaagde verzending). hashFiles-check: sla niets op als het bestand
+      # er niet is (bv. run zonder nieuwsbrieven vóór de eerste editie).
+      - name: Bewaar verzonden-administratie
+        if: success() && github.event.inputs.mode != 'magazine' && steps.marker.outputs.cache-hit != 'true' && hashFiles('seen_ids.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: seen_ids.json
+          key: dagkrant-seen-${{ github.run_id }}
 
       - name: Al verstuurd vandaag â overgeslagen
         if: steps.marker.outputs.cache-hit == 'true' && github.event.inputs.mode != 'magazine'

@@ -8,9 +8,11 @@ Dit is het hoofdscript dat alle modules aanstuurt:
 4. PDF e-mailen naar het werkadres + Kindle
 
 Schema: ma/wo/do/vr, richttijd krant klaar om 15:00 CEST (lokale Taakplanner
-triggert de cloud-run om 14:30). Elke run → 24 uur terugkijken.
+triggert de cloud-run om 14:30). Elke run → 72 uur terugkijken; de
+verzonden-administratie (Actions-cache) voorkomt duplicaten tussen edities.
 """
 
+import json
 import logging
 import os
 import re
@@ -67,14 +69,60 @@ def _get_truly_visible_text(html: str) -> str:
     text = text.replace("\xa0", "").strip()
     return text
 
-# Dagelijks schema: altijd 24 uur terugkijken
-_HOURS_BACK = 24
+# Terugkijkvenster: 72 uur (i.p.v. 24) zodat handmatig gelabelde mails die pas
+# een dag of twee na ontvangst hun label krijgen alsnog worden meegenomen. De
+# verzonden-administratie (zie _load_seen_ids/_save_seen_ids) voorkomt dat een
+# mail die al in een eerdere editie zat opnieuw verstuurd wordt.
+_HOURS_BACK = 72
 
 
 def _calculate_hours_back() -> int:
-    """Retourneer het aantal uur terugkijken (altijd 24 bij dagelijks schema)."""
+    """Retourneer het aantal uur terugkijken (72; dedup via verzonden-administratie)."""
     logger.info(f"{_HOURS_BACK} uur terugkijken")
     return _HOURS_BACK
+
+
+# ── Verzonden-administratie ────────────────────────────────────────────────
+# JSON-bestand met {message-id-of-url: iso-datum-van-verzending}. In GitHub
+# Actions leeft dit in de Actions-cache (zie dagkrant.yml, key dagkrant-seen-*);
+# lokaal in logs/ (gitignored). Alleen de dagkrant gebruikt dit — een magazine
+# bundelt bewust een vaste periode en raakt de administratie niet aan.
+_SEEN_RETENTION_DAYS = 8  # ruim boven het 72-uursvenster
+
+
+def _seen_ids_path() -> str:
+    """Pad naar de verzonden-administratie (env SEEN_IDS_FILE of logs/)."""
+    return os.getenv("SEEN_IDS_FILE", os.path.join("..", "logs", "seen_ids.json"))
+
+
+def _load_seen_ids(path: str) -> dict | None:
+    """Lees de administratie; None als het bestand (nog) niet bestaat."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"Verzonden-administratie onleesbaar ({e}) — start met lege lijst.")
+        return {}
+
+
+def _save_seen_ids(path: str, seen: dict) -> None:
+    """Schrijf de administratie; snoei items ouder dan _SEEN_RETENTION_DAYS."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_SEEN_RETENTION_DAYS)
+    pruned = {}
+    for mid, stamp in seen.items():
+        try:
+            if datetime.fromisoformat(stamp) >= cutoff:
+                pruned[mid] = stamp
+        except (ValueError, TypeError):
+            continue
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pruned, f, ensure_ascii=False, indent=1)
+    logger.info(f"Verzonden-administratie bijgewerkt: {len(pruned)} item(s) ({path}).")
 
 
 _NL_MONTHS_SHORT = {
@@ -174,14 +222,62 @@ def main():
 
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
 
+    # --- Verzonden-administratie: filter wat al in een eerdere editie zat ---
+    # Het 72-uursvenster geeft laat-gelabelde mails alsnog een kans; deze
+    # administratie voorkomt dat de rest drie dagen achter elkaar meekomt.
+    seen_ids: dict | None = None
+    seen_path = _seen_ids_path()
+    first_seen_run = False
+    if not is_magazine:
+        seen_ids = _load_seen_ids(seen_path)
+        first_seen_run = seen_ids is None
+        if first_seen_run:
+            # Overgang van 24u → 72u: mails ouder dan 24 uur zaten (mits op tijd
+            # gelabeld) al in eerdere edities. Markeer ze als gedekt zonder te
+            # versturen, anders krijgt de eerste run een golf aan duplicaten.
+            logger.info("Geen verzonden-administratie gevonden — eerste run met 72-uursvenster; "
+                        "mails ouder dan 24 uur worden als al-gedekt gemarkeerd.")
+            seen_ids = {}
+        now_utc = datetime.now(timezone.utc)
+        recent_cutoff = now_utc - timedelta(hours=24)
+        kept = []
+        for nl in newsletters:
+            mid = nl.get("message_id", "")
+            if mid and mid in seen_ids:
+                logger.info(f"  ⏭ Al in eerdere editie: '{nl['subject'][:60]}'")
+                continue
+            if first_seen_run:
+                try:
+                    nl_date = datetime.fromisoformat(nl["date"])
+                except (KeyError, ValueError):
+                    nl_date = now_utc
+                if nl_date < recent_cutoff:
+                    if mid:
+                        seen_ids[mid] = now_utc.isoformat()
+                    continue
+            kept.append(nl)
+        if len(kept) != len(newsletters):
+            logger.info(f"{len(newsletters) - len(kept)} nieuwsbrief(ven) overgeslagen "
+                        f"(al gedekt door een eerdere editie).")
+        newsletters = kept
+
     # Handmatig toegevoegde webartikelen (label: Dagkrant/Lezen) — niet relevant
     # voor een themamagazine over een vast datumbereik.
     if not is_magazine:
         logger.info(f"\n🔗 Stap 1b: Handmatige artikelen ophalen (label: Dagkrant/Lezen)...")
-        article_urls = fetch_article_urls(gmail_user, gmail_password, hours_back=hours_back)
+        # Eerste run zonder administratie: 24u (oud gedrag), anders zouden al
+        # eerder geplaatste webartikelen van de afgelopen 3 dagen dubbel komen.
+        article_urls = fetch_article_urls(
+            gmail_user, gmail_password,
+            hours_back=24 if first_seen_run else hours_back,
+        )
         for url in article_urls:
+            if seen_ids is not None and url in seen_ids:
+                logger.info(f"  ⏭ Al in eerdere editie: {url}")
+                continue
             article = fetch_article(url)
             if article:
+                article["message_id"] = url  # URL als sleutel in de administratie
                 newsletters.append(article)
                 logger.info(f"  Toegevoegd: '{article['subject'][:60]}'")
 
@@ -190,10 +286,16 @@ def main():
             logger.info("Geen nieuwsbrieven gevonden voor dit magazine-filter. Klaar!")
         else:
             logger.info(f"Geen nieuwsbrieven of artikelen gevonden in de laatste {hours_back} uur. Klaar!")
+            if seen_ids is not None:
+                _save_seen_ids(seen_path, seen_ids)  # bewaar evt. eerste-run-markeringen
         return
 
     # Sorteer op datum (nieuwste eerst)
     newsletters.sort(key=lambda x: x.get("date", ""), reverse=True)
+
+    # Alles wat deze editie op tafel had — óók wat straks door de afzenderlimiet
+    # of contentchecks afvalt — telt als gedekt: elke mail krijgt precies één kans.
+    edition_ids = [nl["message_id"] for nl in newsletters if nl.get("message_id")] if not is_magazine else []
 
     # Dedupliceer per afzender: maximaal 2 artikelen per afzender.
     # In magazine-modus is juist de bedoeling om alles van de gekozen periode/
@@ -520,6 +622,14 @@ def main():
             smtp_port=smtp_port,
             **mail_kwargs,
         )
+
+        # Editie is verstuurd — registreer alle meegewogen mails in de
+        # verzonden-administratie zodat het 72-uursvenster geen duplicaten geeft.
+        if seen_ids is not None:
+            sent_stamp = datetime.now(timezone.utc).isoformat()
+            for mid in edition_ids:
+                seen_ids[mid] = sent_stamp
+            _save_seen_ids(seen_path, seen_ids)
 
         recipients = [target_email]
 
