@@ -443,8 +443,11 @@ def main():
     # --- Stap 5: PDF samenstellen ---
     logger.info("\n📄 Stap 5: PDF genereren...")
     if is_magazine:
-        # Nette weergavenaam van de gekozen nieuwsbrief(ven): "A", "A & B" of "A, B & C"
-        magazine_names = [s.strip() for s in magazine_sender.split(",") if s.strip()]
+        # Nette weergavenaam van de gekozen nieuwsbrief(ven): "A", "A & B" of "A, B & C".
+        # "|" is het scheidingsteken (labelnamen kunnen komma's bevatten); komma's
+        # alleen als er geen "|" staat (oude aanroepen/handmatige invoer).
+        _splitter = "|" if "|" in magazine_sender else ","
+        magazine_names = [s.strip() for s in magazine_sender.split(_splitter) if s.strip()]
         if len(magazine_names) > 1:
             names_label = ", ".join(magazine_names[:-1]) + " & " + magazine_names[-1]
         else:

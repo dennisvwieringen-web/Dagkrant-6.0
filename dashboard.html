@@ -748,9 +748,10 @@
       </div>
     </div>
     <p class="hint">
-      Vink aan welke nieuwsbrieven in het magazine moeten — elke e-mail waarvan afzender óf onderwerp
-      aan minstens één aangevinkte naam voldoet wordt meegenomen. <strong>Niets aangevinkt = alle
-      nieuwsbrieven uit de periode.</strong> De lijst wordt bewaard in <code>newsletters.json</code> in de repo.
+      Vink aan welke nieuwsbrieven in het magazine moeten — elke e-mail waarvan het Gmail-label,
+      de afzender óf het onderwerp aan minstens één aangevinkte naam voldoet wordt meegenomen.
+      <strong>Niets aangevinkt = alle nieuwsbrieven uit de periode.</strong>
+      De lijst (= jouw Gmail-labels onder “Nieuwsbrieven”) wordt bewaard in <code>newsletters.json</code> in de repo.
     </p>
 
     <div style="display: flex; gap: 12px;">
@@ -1116,7 +1117,9 @@
   }
 
   async function triggerMagazine() {
-    const sender = nlList.filter(n => nlSelected.has(n)).join(', ');
+    // "|" als scheidingsteken: labelnamen kunnen zelf komma's bevatten
+    // (bv. "X, Y of Einstein"), dus komma-gescheiden zou stukgaan.
+    const sender = nlList.filter(n => nlSelected.has(n)).join(' | ');
     const from = document.getElementById('mag-from').value;
     const to = document.getElementById('mag-to').value;
     const title = document.getElementById('mag-title').value.trim();

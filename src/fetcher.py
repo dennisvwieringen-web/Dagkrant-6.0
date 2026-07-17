@@ -138,6 +138,41 @@ def extract_real_sender(plain_content: Optional[str], html_content: Optional[str
     return envelope_sender
 
 
+def _imap_utf7_decode(name: str) -> str:
+    """
+    Decodeer een IMAP modified-UTF-7 foldernaam (RFC 3501) naar gewone tekst.
+
+    Gmail codeert niet-ASCII-tekens in labelnamen zo: "Alexander Kl&APY-pping"
+    → "Alexander Klöpping". "&-" is een letterlijke "&". Nodig om labelnamen
+    leesbaar te maken voor weergave en voor het magazine-filter.
+    """
+    import base64
+
+    result = []
+    i = 0
+    while i < len(name):
+        if name[i] == "&":
+            end = name.find("-", i)
+            if end == -1:  # geen afsluiter — behandel als letterlijke tekst
+                result.append(name[i:])
+                break
+            b64 = name[i + 1:end]
+            if not b64:
+                result.append("&")
+            else:
+                b64 = b64.replace(",", "/")
+                b64 += "=" * ((4 - len(b64) % 4) % 4)
+                try:
+                    result.append(base64.b64decode(b64).decode("utf-16-be"))
+                except Exception:
+                    result.append(name[i:end + 1])
+            i = end + 1
+        else:
+            result.append(name[i])
+            i += 1
+    return "".join(result)
+
+
 def fetch_newsletters(
     gmail_user: str,
     gmail_password: str,
@@ -154,12 +189,15 @@ def fetch_newsletters(
     editie). Geef `since_date`/`until_date` expliciet mee om een vast datumbereik
     op te vragen (bv. voor een magazine over een hele maand) — dat overschrijft
     `hours_back`. `sender_filter` beperkt het resultaat tot e-mails waarvan de
-    afzender of het onderwerp de tekst bevat (case-insensitive substring).
-    Meerdere nieuwsbrieven tegelijk kan met komma's: "AI Report, Matthijs van
-    Nieuwkerk" matcht e-mails die aan minstens één van de termen voldoen (OR).
+    afzender, het onderwerp óf de Gmail-labelnaam de tekst bevat
+    (case-insensitive substring). Meerdere nieuwsbrieven tegelijk: scheid
+    termen met "|" (of komma's als er geen "|" in zit — "|" is nodig omdat
+    labelnamen zelf komma's kunnen bevatten, zoals "X, Y of Einstein");
+    een e-mail hoeft maar aan één term te voldoen (OR).
 
     Returns:
-        Lijst van dicts met keys: subject, sender, date, html_content, plain_content
+        Lijst van dicts met keys: subject, sender, date, label,
+        html_content, plain_content
     """
     newsletters = []
     if since_date is None:
@@ -217,7 +255,18 @@ def fetch_newsletters(
 
         seen_message_ids = set()  # Voorkom duplicaten over folders heen
 
+        # Filtertermen: "|" is het scheidingsteken (labelnamen kunnen komma's
+        # bevatten); alleen als er geen "|" staat, splitsen we op komma's.
+        filter_terms = []
+        if sender_filter:
+            splitter = "|" if "|" in sender_filter else ","
+            filter_terms = [t.strip().lower() for t in sender_filter.split(splitter) if t.strip()]
+
         for folder in folders_to_search:
+            # Leesbare labelnaam: UTF-7 gedecodeerd, zonder "Nieuwsbrieven/"-prefix
+            folder_label = _imap_utf7_decode(folder)
+            if folder_label.lower().startswith(f"{label.lower()}/"):
+                folder_label = folder_label[len(label) + 1:]
             try:
                 status, _ = mail.select(f'"{folder}"', readonly=True)
                 if status != "OK":
@@ -242,12 +291,14 @@ def fetch_newsletters(
                         raw_email = msg_data[0][1]
                         msg = email.message_from_bytes(raw_email)
 
-                        # Dedup op Message-ID over folders heen
+                        # Dedup op Message-ID over folders heen. Pas op: registreren
+                        # gebeurt pas bij ACCEPTATIE (na het filter, zie onder) —
+                        # dezelfde mail hangt vaak onder meerdere labels (hoofdfolder
+                        # "Nieuwsbrieven" + sublabel), en het label-filter kan 'm in
+                        # de ene folder afwijzen maar in de andere moeten accepteren.
                         message_id = msg.get("Message-ID", "")
                         if message_id and message_id in seen_message_ids:
                             continue
-                        if message_id:
-                            seen_message_ids.add(message_id)
 
                         # Parse datum en controleer of het binnen het tijdvenster valt
                         date_str = msg.get("Date", "")
@@ -275,21 +326,29 @@ def fetch_newsletters(
                         # Extraheer de echte afzender bij doorgestuurde e-mails
                         sender = extract_real_sender(plain_content, html_content, envelope_sender)
 
-                        # Magazine-modus: filter op afzender/onderwerp (case-insensitive
-                        # substring). Komma's scheiden meerdere termen — een e-mail
-                        # hoeft maar aan één term te voldoen (OR), zodat één magazine
-                        # meerdere nieuwsbrieven kan bundelen.
-                        if sender_filter:
-                            terms = [t.strip().lower() for t in sender_filter.split(",") if t.strip()]
-                            if terms and not any(
-                                t in sender.lower() or t in subject.lower() for t in terms
-                            ):
-                                continue
+                        # Magazine-modus: filter op afzender, onderwerp óf labelnaam
+                        # (case-insensitive substring). Een e-mail hoeft maar aan één
+                        # term te voldoen (OR), zodat één magazine meerdere
+                        # nieuwsbrieven kan bundelen. Labelnaam meenemen is essentieel:
+                        # labels als "Oliver Burkeman" of "Lenny" wijken af van de
+                        # afzendernaam in de mail zelf.
+                        if filter_terms and not any(
+                            t in sender.lower()
+                            or t in subject.lower()
+                            or t in folder_label.lower()
+                            for t in filter_terms
+                        ):
+                            continue
+
+                        # Geaccepteerd — nu pas markeren als gezien (zie dedup-opmerking)
+                        if message_id:
+                            seen_message_ids.add(message_id)
 
                         newsletters.append({
                             "subject": subject,
                             "sender": sender,
                             "date": parsed_date.isoformat(),
+                            "label": folder_label,
                             "html_content": html_content,
                             "plain_content": plain_content,
                         })
