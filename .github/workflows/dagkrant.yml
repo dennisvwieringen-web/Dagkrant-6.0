@@ -33,13 +33,15 @@ name: De Dagkrant - Nieuwsbundel
 # (zodat een magazine ook werkt op een dag dat de dagkrant al is verstuurd).
 # âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-on:
+'on':
   schedule:
     # ACHTERVANG â bewust laat (~17:00 CEST zomertijd). De stipte 14:30-trigger
     # komt van de lokale Taakplanner via workflow_dispatch. Wintertijd (CET):
     # zet dan op '0 16 * * 1,3,4,5'.
     - cron: '0 8 * * 0,1,2,3,4,5,6'
-  workflow_dispatch:  # â primaire trigger (lokale Taakplanner) + handmatig + magazine
+  # Primaire trigger: lokale Taakplanner, dashboard en handmatige GitHub-run.
+  # Apart gehouden van inline commentaar zodat GitHub hem eenduidig registreert.
+  workflow_dispatch:
     inputs:
       mode:
         description: 'Modus'
@@ -50,7 +52,7 @@ on:
           - dagkrant
           - magazine
       sender_filter:
-        description: 'Magazine: afzender/onderwerp bevat (optioneel; meerdere met komma, bv. AI Report, NRC)'
+        description: 'Magazine: afzender, onderwerp of label (optioneel)'
         required: false
         default: ''
       date_from:
