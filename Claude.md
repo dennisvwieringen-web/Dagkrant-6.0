@@ -163,6 +163,8 @@ Naast de dagelijkse 24-uurs editie kan dezelfde workflow ook een **magazine** ge
 
 ## Known Behaviour & Solved Issues
 
+**Dashboard-saves vermangelden UTF-8 → workflow "kwijt" bij GitHub (solved, juli 2026):** `getFile()` in `dashboard.html` decodeerde base64 met kaal `atob()` (= Latin-1), terwijl `putFile()` als UTF-8 codeert. Elke opslag via het dashboard dubbel-codeerde daardoor alle niet-ASCII-tekens. In `dagkrant.yml` werden em-dashes/lijntekens in de commentaren zo C1-controltekens (U+0080/U+0094) — verboden in YAML — waarna GitHub het bestand niet meer kon parsen en **stilletjes álle triggers deregistreerde** (workflow-`name` valt dan terug op het bestandspad; handmatige dispatch geeft een misleidende 422 "Workflow does not have workflow_dispatch trigger", en ook de schedule-cron vuurt niet meer). Fix: `getFile()` decodeert nu via `TextDecoder('utf-8')`. Herken het patroon: verschijnt de workflow in de Actions-API onder z'n pad i.p.v. z'n naam, dan is de YAML onparseerbaar.
+
 **Substack-style newsletters (Cal Newport, Lenny's Newsletter)** have two previously solved problems worth remembering:
 
 1. **Empty content (solved):** `display:none` preview text and `&nbsp;` spacers inflated the character count past the 300-char threshold. Fixed via `_get_truly_visible_text()` which strips these before counting.
