@@ -793,12 +793,36 @@
   function saveToken() {
     const t = document.getElementById('pat').value.trim();
     if (!t) return showStatus('token-status', 'error', 'Vul een token in.');
-    localStorage.setItem('dagkrant_pat', t);
-    document.getElementById('pat').value = '••••••••••••••••••••';
-    showStatus('token-status', 'loading', 'Verbinding testen…');
+    if (/^•+$/.test(t)) {
+      // Het veld toont alleen de maskering van een eerder opgeslagen token.
+      // NIET opslaan (dat zou het echte token overschrijven met bolletjes) —
+      // test in plaats daarvan het opgeslagen token.
+      if (!getToken()) return showStatus('token-status', 'error', 'Vul eerst je echte token in (github_pat_…).');
+      showStatus('token-status', 'loading', 'Opgeslagen token testen…');
+    } else {
+      localStorage.setItem('dagkrant_pat', t);
+      document.getElementById('pat').value = '••••••••••••••••••••';
+      showStatus('token-status', 'loading', 'Verbinding testen…');
+    }
     apiGet(`https://api.github.com/repos/${OWNER}/${REPO}`)
-      .then(() => { showStatus('token-status', 'success', 'Verbonden! Instellingen worden geladen…'); loadAll(); })
-      .catch(() => showStatus('token-status', 'error', 'Token ongeldig of onvoldoende rechten.'));
+      .then(() => {
+        // localStorage is voor file://-pagina's vluchtig; zonder token-bestand
+        // moet het token na browseropschoning telkens opnieuw geplakt worden.
+        const hint = window.DAGKRANT_TOKEN ? '' :
+          ' Tip: klik nu op “Bewaar als bestand (blijvend)” en sla dagkrant-token.js op in dezelfde map als dashboard.html — anders moet je het token geregeld opnieuw plakken.';
+        showStatus('token-status', 'success', `Verbonden! Instellingen worden geladen…${hint}`);
+        loadAll();
+      })
+      .catch(e => {
+        const msg = String(e && e.message || e);
+        if (msg === '404') {
+          showStatus('token-status', 'error',
+            `Het token is geldig, maar heeft geen toegang tot de repository. Open het token op GitHub (Edit) en kies bij “Repository access” expliciet ${OWNER}/${REPO}.`);
+        } else {
+          showStatus('token-status', 'error',
+            'Token ongeldig of onvoldoende rechten. Plak de volledige tokenwaarde (begint met “github_pat_”) — geen bolletjes of spaties — en controleer de rechten: Contents, Secrets, Actions en Workflows (Read & Write).');
+        }
+      });
   }
 
   function clearToken() {
@@ -906,9 +930,47 @@
     return r.status === 204 ? null : r.json();
   }
 
+  // Gebruik de workflow zoals GitHub die daadwerkelijk heeft geregistreerd.
+  // Een bestandsnaam + hardcoded branch kan een misleidende 422 opleveren
+  // ("Workflow does not have workflow_dispatch trigger") wanneer de
+  // standaardbranch ooit is hernoemd of GitHub de workflow onder zijn ID kent.
+  let dispatchTarget = null;
+  async function getDispatchTarget() {
+    if (dispatchTarget) return dispatchTarget;
+    const [repo, workflows] = await Promise.all([
+      apiGet(`https://api.github.com/repos/${OWNER}/${REPO}`),
+      apiGet(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows`)
+    ]);
+    const workflow = workflows.workflows.find(w => w.path === WORKFLOW_FILE);
+    if (!workflow) throw new Error(`Workflow ${WORKFLOW_FILE} is niet door GitHub geregistreerd.`);
+    if (workflow.state !== 'active') throw new Error(`De workflow staat op GitHub niet actief (${workflow.state}).`);
+    dispatchTarget = { id: workflow.id, ref: repo.default_branch };
+    return dispatchTarget;
+  }
+
+  async function dispatchWorkflow(inputs = undefined) {
+    const target = await getDispatchTarget();
+    const body = { ref: target.ref };
+    if (inputs) body.inputs = inputs;
+    try {
+      await apiPost(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${target.id}/dispatches`, body);
+    } catch (e) {
+      if (/workflow_dispatch/i.test(String(e.message))) {
+        dispatchTarget = null;
+        throw new Error(`GitHub herkent de handmatige trigger niet op standaardbranch “${target.ref}”. Vernieuw het dashboard; blijft dit terugkomen, publiceer dan eerst de actuele dagkrant.yml naar die branch.`);
+      }
+      throw e;
+    }
+  }
+
   async function getFile(path) {
     const data = await apiGet(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`);
-    return { content: atob(data.content.replace(/\n/g, '')), sha: data.sha };
+    // atob() geeft een byte-string; die MOET als UTF-8 gedecodeerd worden.
+    // putFile codeert als UTF-8, dus kaal atob() dubbel-codeert elk niet-ASCII-
+    // teken bij een save — zo raakte dagkrant.yml onparseerbaar (C1-tekens)
+    // en deregistreerde GitHub stilletjes de workflow_dispatch-trigger.
+    const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+    return { content: new TextDecoder('utf-8').decode(bytes), sha: data.sha };
   }
 
   async function putFile(path, content, sha, message) {
@@ -969,9 +1031,13 @@
       const utcH = (lh - 2 + 24) % 24;
       const newCron = `${lm} ${utcH} * * ${active.sort((a,b)=>a-b).join(',')}`;
       const { content, sha } = await getFile(WORKFLOW_FILE);
-      const updated = content.replace(/cron:\s*'[^']+'/, `cron: '${newCron}'`);
-      if (updated === content) return showStatus('schedule-status', 'error', 'Cron-regel niet gevonden.');
-      await putFile(WORKFLOW_FILE, updated, sha, `config: planning → ${newCron}`);
+      const cronRe = /cron:\s*'[^']+'/;
+      if (!cronRe.test(content)) return showStatus('schedule-status', 'error', 'Cron-regel niet gevonden.');
+      const updated = content.replace(cronRe, `cron: '${newCron}'`);
+      // Ongewijzigde planning is geen fout — sla het PUT-verzoek dan gewoon over.
+      if (updated !== content) {
+        await putFile(WORKFLOW_FILE, updated, sha, `config: planning → ${newCron}`);
+      }
       const names = { '0':'zo','1':'ma','2':'di','3':'wo','4':'do','5':'vr','6':'za' };
       document.getElementById('current-schedule').textContent =
         `Huidig: ${active.map(d => names[d]).join(', ')} om ${String(lh).padStart(2,'0')}:${String(lm).padStart(2,'0')}`;
@@ -999,7 +1065,7 @@
   async function triggerRun() {
     showStatus('run-status', 'loading', 'Run starten…');
     try {
-      await apiPost(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/dagkrant.yml/dispatches`, { ref: 'main' });
+      await dispatchWorkflow();
       showStatus('run-status', 'success', 'Run gestart! Bekijk de voortgang in GitHub Actions.');
     } catch(e) { showStatus('run-status', 'error', `Fout: ${e.message}`); }
   }
@@ -1129,10 +1195,7 @@
 
     showStatus('magazine-status', 'loading', 'Magazine-run starten…');
     try {
-      await apiPost(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/dagkrant.yml/dispatches`, {
-        ref: 'main',
-        inputs: { mode: 'magazine', sender_filter: sender, date_from: from, date_to: to, title: title }
-      });
+      await dispatchWorkflow({ mode: 'magazine', sender_filter: sender, date_from: from, date_to: to, title: title });
       showStatus('magazine-status', 'success', 'Magazine-run gestart! Bekijk de voortgang in GitHub Actions.');
     } catch(e) { showStatus('magazine-status', 'error', `Fout: ${e.message}`); }
   }
