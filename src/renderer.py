@@ -38,6 +38,12 @@ def _format_dutch_date(dt: datetime) -> str:
         en_date = en_date.replace(en, nl)
     return en_date
 
+
+def _format_dutch_date_short(dt: datetime) -> str:
+    """Formatteer een datetime naar korte Nederlandse datum: '17 juli 2026'."""
+    month = _NL_MONTHS[dt.strftime("%B")]
+    return f"{dt.day} {month} {dt.year}"
+
 logger = logging.getLogger(__name__)
 
 # Pad naar de templates-map
@@ -439,7 +445,7 @@ def send_email_with_pdf(
     """Verstuur de PDF als e-mailbijlage.
 
     `subject`, `body` en `filename` zijn optioneel en overschrijven de standaard
-    "Dagkrant Editie #N"-teksten (gebruikt door bv. een magazine-run).
+    "Dagkrant — <datum>"-teksten (gebruikt door bv. een magazine-run).
     """
     import smtplib
     from email.mime.application import MIMEApplication
@@ -447,8 +453,7 @@ def send_email_with_pdf(
     from email.mime.text import MIMEText
 
     now = datetime.now(timezone.utc)
-    edition = _get_edition_number()
-    subject = subject or f"De Dagkrant - Editie #{edition} - {_format_dutch_date(now)}"
+    subject = subject or f"Dagkrant — {_format_dutch_date(now)}"
 
     msg = MIMEMultipart()
     msg["From"] = sender_email
@@ -457,14 +462,14 @@ def send_email_with_pdf(
 
     body = body or (
         f"Goedemiddag!\n\n"
-        f"Hierbij de Dagkrant van vandaag (Editie #{edition}).\n"
+        f"Hierbij de Dagkrant van {_format_dutch_date(now)}.\n"
         f"Veel leesplezier!\n\n"
         f"Met vriendelijke groet,\n"
         f"De Dagkrant"
     )
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    filename = filename or f"Dagkrant_Editie_{edition}_{now.strftime('%Y%m%d')}.pdf"
+    filename = filename or f"Dagkrant {_format_dutch_date_short(now)}.pdf"
     with open(pdf_path, "rb") as f:
         pdf_attachment = MIMEApplication(f.read(), _subtype="pdf")
         pdf_attachment.add_header("Content-Disposition", "attachment", filename=filename)

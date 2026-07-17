@@ -328,6 +328,131 @@
 
     .hint strong { color: var(--sepia-600); }
 
+    /* ── Nieuwsbrief-rolmenu (magazine) ── */
+    .nl-dropdown { position: relative; margin-bottom: 14px; }
+
+    .nl-toggle {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--sepia-300);
+      border-radius: var(--radius-input);
+      background: var(--sepia-50);
+      color: var(--sepia-900);
+      font-family: var(--font);
+      font-size: 0.88rem;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .nl-toggle:hover, .nl-toggle:focus {
+      outline: none;
+      border-color: var(--accent-warm);
+    }
+
+    .nl-toggle-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nl-caret { color: var(--sepia-400); font-size: 0.7rem; flex-shrink: 0; }
+
+    .nl-menu {
+      position: absolute;
+      z-index: 30;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: var(--sepia-50);
+      border: 1px solid var(--sepia-300);
+      border-radius: var(--radius-input);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+      max-height: 280px;
+      overflow-y: auto;
+      padding: 6px;
+    }
+
+    .nl-menu[hidden] { display: none; }
+
+    .nl-option {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: var(--sepia-900);
+      user-select: none;
+    }
+
+    .nl-option:hover { background: color-mix(in srgb, var(--accent-warm) 10%, transparent); }
+
+    .nl-option input[type="checkbox"] {
+      accent-color: var(--accent-warm);
+      margin: 0;
+      cursor: pointer;
+    }
+
+    .nl-name { flex: 1; }
+
+    .nl-remove {
+      border: none;
+      background: none;
+      color: var(--sepia-400);
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 1px 5px;
+      border-radius: 4px;
+      line-height: 1.4;
+    }
+
+    .nl-remove:hover {
+      color: #b3564e;
+      background: color-mix(in srgb, #b3564e 12%, transparent);
+    }
+
+    .nl-empty {
+      padding: 8px;
+      font-size: 0.8rem;
+      color: var(--sepia-400);
+      font-style: italic;
+    }
+
+    .nl-add {
+      display: flex;
+      gap: 6px;
+      padding: 8px 6px 4px 6px;
+      border-top: 1px solid var(--sepia-300);
+      margin-top: 4px;
+    }
+
+    .nl-add input[type="text"] {
+      flex: 1;
+      margin-bottom: 0;
+      padding: 6px 9px;
+      font-size: 0.82rem;
+    }
+
+    .nl-add button {
+      padding: 6px 12px;
+      border: 1px solid var(--sepia-300);
+      border-radius: var(--radius-btn);
+      background: var(--sepia-50);
+      color: var(--sepia-600);
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    .nl-add button:hover { border-color: var(--accent-warm); color: var(--accent-warm); }
+
     /* ── Days ── */
     .days-row {
       display: flex;
@@ -509,10 +634,17 @@
     <input type="password" id="pat" placeholder="github_pat_xxxxxxxxxxxxxxxxxxxx">
     <p class="hint">
       Maak aan via <strong>github.com → Settings → Developer settings → Fine-grained tokens</strong>.
-      Geef rechten: <strong>Contents</strong>, <strong>Secrets</strong> en <strong>Actions</strong> — alles Read &amp; Write.
+      Geef rechten: <strong>Contents</strong>, <strong>Secrets</strong>, <strong>Actions</strong> en <strong>Workflows</strong> — alles Read &amp; Write.
+      (Workflows is nodig om de planning op te slaan; zonder die permissie geeft dat “Resource not accessible by personal access token”.)
+      Kies als looptijd <strong>1 jaar</strong> (het maximum) — fine-grained tokens verlopen altijd;
+      een verlopen token geeft de fout “Bad credentials”.
+      Klik na het verbinden op <strong>“Bewaar als bestand”</strong>: dan wordt het token bewaard als
+      <code>dagkrant-token.js</code> naast dit dashboard en hoef je het nooit meer te plakken —
+      ook niet na het wissen van browserdata of in een andere browser.
     </p>
     <div class="btn-row">
       <button class="btn btn-primary" onclick="saveToken()">Verbinden</button>
+      <button class="btn btn-secondary" onclick="saveTokenFile()">Bewaar als bestand (blijvend)</button>
       <button class="btn btn-secondary" onclick="clearToken()">Wissen</button>
     </div>
     <div id="token-status" class="status"></div>
@@ -600,11 +732,25 @@
       Matthijs van Nieuwkerk uit 2026. Geen limiet per afzender.
     </p>
 
-    <label for="mag-sender">Nieuwsbrief(ven) — afzender of onderwerp (optioneel)</label>
-    <input type="text" id="mag-sender" placeholder="bv. AI Report, Matthijs van Nieuwkerk">
+    <label>Nieuwsbrief(ven) (optioneel)</label>
+    <div class="nl-dropdown" id="nl-dropdown">
+      <button type="button" class="nl-toggle" onclick="toggleNlMenu()">
+        <span class="nl-toggle-label" id="nl-toggle-label">Alle nieuwsbrieven (geen filter)</span>
+        <span class="nl-caret">▾</span>
+      </button>
+      <div class="nl-menu" id="nl-menu" hidden>
+        <div id="nl-options"></div>
+        <div class="nl-add">
+          <input type="text" id="nl-new" placeholder="Nieuwe nieuwsbrief…"
+                 onkeydown="if (event.key === 'Enter') { event.preventDefault(); addNewsletter(); }">
+          <button type="button" onclick="addNewsletter()">+ Toevoegen</button>
+        </div>
+      </div>
+    </div>
     <p class="hint">
-      Meerdere nieuwsbrieven in één magazine? Scheid de namen met <strong>komma's</strong> —
-      elke e-mail die aan minstens één term voldoet wordt meegenomen. Leeg = alle nieuwsbrieven uit de periode.
+      Vink aan welke nieuwsbrieven in het magazine moeten — elke e-mail waarvan afzender óf onderwerp
+      aan minstens één aangevinkte naam voldoet wordt meegenomen. <strong>Niets aangevinkt = alle
+      nieuwsbrieven uit de periode.</strong> De lijst wordt bewaard in <code>newsletters.json</code> in de repo.
     </p>
 
     <div style="display: flex; gap: 12px;">
@@ -619,7 +765,7 @@
     </div>
 
     <label for="mag-title">Titel op de cover (optioneel)</label>
-    <input type="text" id="mag-title" placeholder="bv. Google Recap — Juni 2026">
+    <input type="text" id="mag-title" placeholder="leeg = automatisch: Magazine — naam nieuwsbrief(ven)">
 
     <div class="btn-row">
       <button class="btn btn-run" style="width: auto; flex: 1;" onclick="triggerMagazine()">▶&nbsp; Magazine genereren</button>
@@ -629,13 +775,19 @@
 
 </div>
 
+<!-- Blijvende token-opslag (optioneel): dagkrant-token.js naast dit bestand zet
+     window.DAGKRANT_TOKEN. localStorage bleek vluchtig voor file://-pagina's
+     (browserdata wissen / ander profiel = token weg). Ontbreekt het bestand,
+     dan geeft de browser alleen een onschuldige console-melding.
+     Staat in .gitignore — NOOIT committen. -->
+<script src="dagkrant-token.js"></script>
 <script>
   const OWNER = 'dennisvwieringen-web';
   const REPO  = 'Dagkrant-6.0';
   const WORKFLOW_FILE = '.github/workflows/dagkrant.yml';
   const MAIN_FILE     = 'src/main.py';
 
-  function getToken() { return localStorage.getItem('dagkrant_pat') || ''; }
+  function getToken() { return localStorage.getItem('dagkrant_pat') || window.DAGKRANT_TOKEN || ''; }
 
   function saveToken() {
     const t = document.getElementById('pat').value.trim();
@@ -651,31 +803,104 @@
   function clearToken() {
     localStorage.removeItem('dagkrant_pat');
     document.getElementById('pat').value = '';
-    showStatus('token-status', 'success', 'Token verwijderd.');
+    if (window.DAGKRANT_TOKEN) {
+      showStatus('token-status', 'error',
+        'Token uit de browser verwijderd, maar het bestand dagkrant-token.js bestaat nog en blijft werken. Verwijder dat bestand ook als je het token volledig wilt wissen.');
+    } else {
+      showStatus('token-status', 'success', 'Token verwijderd.');
+    }
+  }
+
+  // Schrijft het token als dagkrant-token.js — zet 'm in dezelfde map als
+  // dashboard.html. Chrome/Edge: "opslaan als"-dialoog (File System Access API);
+  // andere browsers: gewone download die je zelf even verplaatst.
+  async function saveTokenFile() {
+    let t = document.getElementById('pat').value.trim();
+    if (!t || /^•+$/.test(t)) t = getToken();
+    if (!t) return showStatus('token-status', 'error', 'Vul eerst een token in (of klik Verbinden).');
+    const content =
+      '// GitHub-token voor dashboard.html — wordt automatisch geladen.\n' +
+      '// Dit bestand staat in .gitignore: NOOIT committen of delen.\n' +
+      `window.DAGKRANT_TOKEN = ${JSON.stringify(t)};\n`;
+    let saved = false;
+    if (window.showSaveFilePicker) {
+      try {
+        const h = await window.showSaveFilePicker({
+          suggestedName: 'dagkrant-token.js',
+          types: [{ description: 'JavaScript', accept: { 'text/javascript': ['.js'] } }]
+        });
+        const w = await h.createWritable();
+        await w.write(content);
+        await w.close();
+        saved = true;
+      } catch (e) {
+        if (e.name === 'AbortError') return; // gebruiker annuleerde de dialoog
+      }
+    }
+    if (!saved) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([content], { type: 'text/javascript' }));
+      a.download = 'dagkrant-token.js';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+    showStatus('token-status', 'success',
+      'Opgeslagen! Zorg dat dagkrant-token.js in dezelfde map staat als dashboard.html. ' +
+      'Vanaf dan werkt het token in elke browser en overleeft het ook het wissen van browserdata.');
+  }
+
+  const EXPIRED_MSG = 'GitHub weigert het opgeslagen token (401). Mogelijke oorzaken: token verlopen/ingetrokken, “Regenerate token” gebruikt (de oude waarde vervalt dan direct), of dit is een andere browser dan waar je het token plakte. Plak de actuele tokenwaarde hierboven bij “GitHub verbinding”.';
+  const NO_TOKEN_MSG = 'Geen token opgeslagen in deze browser. Plak je token hierboven bij “GitHub verbinding”, klik Verbinden en daarna “Bewaar als bestand” — dan gebeurt dit niet meer.';
+
+  // Het token leeft in localStorage van déze browser — een leeg token geeft
+  // anders óók een 401, wat ten onrechte als "verlopen" zou worden gemeld.
+  function requireToken() {
+    if (!getToken()) throw new Error(NO_TOKEN_MSG);
+  }
+
+  // Fine-grained PATs verlopen altijd; GitHub stuurt de vervaldatum als header mee.
+  let expiryWarned = false;
+  function checkTokenExpiry(r) {
+    if (expiryWarned) return;
+    const exp = r.headers.get('github-authentication-token-expiration');
+    if (!exp) return;
+    const days = Math.floor((new Date(exp) - Date.now()) / 86400000);
+    if (days <= 14) {
+      expiryWarned = true;
+      showStatus('token-status', 'error',
+        `Let op: het GitHub-token verloopt ${days <= 0 ? 'vandaag' : `over ${days} dag${days === 1 ? '' : 'en'}`}. Maak tijdig een nieuwe aan.`);
+    }
   }
 
   async function apiGet(url) {
+    requireToken();
     const r = await fetch(url, { headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/vnd.github+json' } });
+    if (r.status === 401) throw new Error(EXPIRED_MSG);
     if (!r.ok) throw new Error(r.status);
+    checkTokenExpiry(r);
     return r.json();
   }
 
   async function apiPut(url, body) {
+    requireToken();
     const r = await fetch(url, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    if (r.status === 401) throw new Error(EXPIRED_MSG);
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || r.status); }
     return r.json();
   }
 
   async function apiPost(url, body) {
+    requireToken();
     const r = await fetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    if (r.status === 401) throw new Error(EXPIRED_MSG);
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || r.status); }
     return r.status === 204 ? null : r.json();
   }
@@ -694,7 +919,13 @@
 
   async function loadAll() {
     if (!getToken()) return;
-    await Promise.all([loadSchedule(), loadLimits()]);
+    try {
+      await apiGet(`https://api.github.com/repos/${OWNER}/${REPO}`);
+    } catch (e) {
+      document.getElementById('current-schedule').textContent = 'Geen verbinding met GitHub.';
+      return showStatus('token-status', 'error', e.message === EXPIRED_MSG ? EXPIRED_MSG : 'Kan geen verbinding maken met GitHub.');
+    }
+    await Promise.all([loadSchedule(), loadLimits(), loadNewsletters()]);
   }
 
   async function loadSchedule() {
@@ -772,8 +1003,120 @@
     } catch(e) { showStatus('run-status', 'error', `Fout: ${e.message}`); }
   }
 
+  // ── Nieuwsbrief-rolmenu (magazine) ─────────────────────────────────────
+  // De lijst leeft in newsletters.json in de repo, zodat hij op elke pc en
+  // in elke browser hetzelfde is. Toevoegen/verwijderen schrijft direct terug.
+  const NEWSLETTERS_FILE = 'newsletters.json';
+  let nlList = [];
+  let nlSha = null;
+  const nlSelected = new Set();
+
+  async function loadNewsletters() {
+    try {
+      const { content, sha } = await getFile(NEWSLETTERS_FILE);
+      nlList = JSON.parse(content);
+      nlSha = sha;
+    } catch (e) {
+      nlList = [];   // bestand ontbreekt nog — wordt aangemaakt bij eerste "+ Toevoegen"
+      nlSha = null;
+    }
+    renderNlOptions();
+  }
+
+  function renderNlOptions() {
+    const box = document.getElementById('nl-options');
+    box.innerHTML = '';
+    if (!nlList.length) {
+      const empty = document.createElement('div');
+      empty.className = 'nl-empty';
+      empty.textContent = 'Nog geen nieuwsbrieven in de lijst — voeg er hieronder een toe.';
+      box.appendChild(empty);
+    }
+    for (const name of nlList) {
+      const row = document.createElement('label');
+      row.className = 'nl-option';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = nlSelected.has(name);
+      cb.addEventListener('change', () => {
+        cb.checked ? nlSelected.add(name) : nlSelected.delete(name);
+        updateNlToggleLabel();
+      });
+      const span = document.createElement('span');
+      span.className = 'nl-name';
+      span.textContent = name;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'nl-remove';
+      del.title = 'Verwijderen uit de lijst';
+      del.textContent = '✕';
+      del.addEventListener('click', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        removeNewsletter(name);
+      });
+      row.append(cb, span, del);
+      box.appendChild(row);
+    }
+    updateNlToggleLabel();
+  }
+
+  function updateNlToggleLabel() {
+    const sel = nlList.filter(n => nlSelected.has(n));
+    document.getElementById('nl-toggle-label').textContent =
+      sel.length ? sel.join(', ') : 'Alle nieuwsbrieven (geen filter)';
+  }
+
+  function toggleNlMenu() {
+    const menu = document.getElementById('nl-menu');
+    menu.hidden = !menu.hidden;
+  }
+
+  document.addEventListener('click', e => {
+    const dd = document.getElementById('nl-dropdown');
+    if (dd && !dd.contains(e.target)) document.getElementById('nl-menu').hidden = true;
+  });
+
+  async function saveNewsletterList(message) {
+    const content = JSON.stringify(nlList, null, 2) + '\n';
+    const data = await apiPut(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${NEWSLETTERS_FILE}`, {
+      message,
+      content: btoa(unescape(encodeURIComponent(content))),
+      ...(nlSha ? { sha: nlSha } : {})
+    });
+    nlSha = data.content.sha;
+  }
+
+  async function addNewsletter() {
+    const input = document.getElementById('nl-new');
+    const name = input.value.trim();
+    if (!name) return;
+    input.value = '';
+    if (nlList.some(n => n.toLowerCase() === name.toLowerCase())) return;
+    nlList.push(name);
+    nlList.sort((a, b) => a.localeCompare(b, 'nl', { sensitivity: 'base' }));
+    nlSelected.add(name);
+    renderNlOptions();
+    try {
+      await saveNewsletterList(`config: nieuwsbrief '${name}' toegevoegd aan magazine-lijst`);
+    } catch (e) {
+      showStatus('magazine-status', 'error', `Lijst opslaan mislukt: ${e.message}`);
+    }
+  }
+
+  async function removeNewsletter(name) {
+    nlList = nlList.filter(n => n !== name);
+    nlSelected.delete(name);
+    renderNlOptions();
+    try {
+      await saveNewsletterList(`config: nieuwsbrief '${name}' verwijderd uit magazine-lijst`);
+    } catch (e) {
+      showStatus('magazine-status', 'error', `Lijst opslaan mislukt: ${e.message}`);
+    }
+  }
+
   async function triggerMagazine() {
-    const sender = document.getElementById('mag-sender').value.trim();
+    const sender = nlList.filter(n => nlSelected.has(n)).join(', ');
     const from = document.getElementById('mag-from').value;
     const to = document.getElementById('mag-to').value;
     const title = document.getElementById('mag-title').value.trim();

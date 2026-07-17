@@ -443,8 +443,16 @@ def main():
     # --- Stap 5: PDF samenstellen ---
     logger.info("\n📄 Stap 5: PDF genereren...")
     if is_magazine:
-        masthead_title = magazine_title or "Het Magazine"
-        masthead_subtitle = "Themabundel" + (f" · {magazine_sender}" if magazine_sender else "")
+        # Nette weergavenaam van de gekozen nieuwsbrief(ven): "A", "A & B" of "A, B & C"
+        magazine_names = [s.strip() for s in magazine_sender.split(",") if s.strip()]
+        if len(magazine_names) > 1:
+            names_label = ", ".join(magazine_names[:-1]) + " & " + magazine_names[-1]
+        else:
+            names_label = magazine_names[0] if magazine_names else ""
+        # Titel: "Magazine — <nieuwsbrief(ven)>", tenzij een eigen covertitel is opgegeven
+        display_title = magazine_title or (f"Magazine — {names_label}" if names_label else "Magazine")
+        masthead_title = magazine_title or "Magazine"
+        masthead_subtitle = names_label or "Themabundel"
         period_label = f"{_format_dutch_date_only(magazine_from)} – {_format_dutch_date_only(magazine_to)}"
         cover_html = render_cover_page(
             newsletters, toc_entries,
@@ -486,17 +494,19 @@ def main():
         logger.info("\n📧 Stap 6: E-mail verzenden...")
         mail_kwargs = {}
         if is_magazine:
-            mail_kwargs["subject"] = f"{masthead_title} — {period_label}"
+            mail_kwargs["subject"] = f"{display_title} — {period_label}"
             mail_kwargs["body"] = (
                 f"Goedemiddag!\n\n"
-                f"Hierbij je magazine '{masthead_title}' ({period_label})"
-                + (f", afzender/onderwerp-filter: {magazine_sender}" if magazine_sender else "")
+                f"Hierbij je magazine '{display_title}' ({period_label})"
                 + f". {len(newsletters)} nieuwsbrie{'f' if len(newsletters) == 1 else 'ven'} gebundeld.\n\n"
                 f"Veel leesplezier!\n\n"
                 f"Met vriendelijke groet,\n"
                 f"De Dagkrant"
             )
-            mail_kwargs["filename"] = f"Magazine_{_slugify(masthead_title)}_{magazine_from}_tot_{magazine_to}.pdf"
+            mail_kwargs["filename"] = (
+                f"Magazine_{_slugify(magazine_title or names_label or 'alle_nieuwsbrieven')}"
+                f"_{magazine_from}_tot_{magazine_to}.pdf"
+            )
 
         send_email_with_pdf(
             pdf_path=pdf_path,

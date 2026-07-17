@@ -1,6 +1,7 @@
 # Secrets - NOOIT committen!
 .env
 .env.*
+dagkrant-token.js
 
 # Python
 __pycache__/
