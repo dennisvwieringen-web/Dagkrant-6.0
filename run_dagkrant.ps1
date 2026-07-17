@@ -1,8 +1,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Lokale trigger voor De Dagkrant.
 #
-# Wordt aangeroepen door de Windows Taakplanner-taak "Dagkrant-1500"
-# (ma/wo/do/vr om 14:30; richttijd krant klaar 15:00). Start de GitHub Actions-
+# Wordt aangeroepen door de Windows Taakplanner-taak "Dagkrant-0830"
+# (dagelijks om 08:30; richttijd krant klaar 09:00). Start de GitHub Actions-
 # workflow stipt via de API (`workflow_dispatch`) — de krant wordt vervolgens
 # IN DE CLOUD opgehaald, vertaald, gerenderd en gemaild.
 #
