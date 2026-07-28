@@ -146,6 +146,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
           KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}
+          READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
           SMTP_SERVER: smtp.gmail.com
           SMTP_PORT: '587'
           MODE: ${{ github.event.inputs.mode || 'dagkrant' }}
