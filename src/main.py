@@ -34,6 +34,7 @@ from translator import (
 )
 from cleaner import clean_html, minimal_clean, deduplicate_title, is_website_template, strip_ai_artifacts
 from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
+from readwise import save_html_document
 
 # Logging configuratie
 logging.basicConfig(
@@ -159,9 +160,9 @@ def main():
     openai_api_key = os.getenv("OPENAI_API_KEY")
     target_email = os.getenv("TARGET_EMAIL")
     kindle_email = os.getenv("KINDLE_EMAIL")  # optioneel
-    # Readwise Reader-feed: standaard aan (feed-adres is niet gevoelig), overschrijfbaar
-    # via env var. Zet op een lege string om de Readwise-bezorging uit te zetten.
-    readwise_email = os.getenv("READWISE_EMAIL", "readwisedvw@feed.readwise.io").strip()
+    # Reader API: één highlightbaar HTML-document per editie. De oude feedmail
+    # met PDF-bijlage is bewust vervallen, omdat Readwise daar twee items van maakte.
+    readwise_token = os.getenv("READWISE_TOKEN", "").strip()
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
 
@@ -647,19 +648,35 @@ def main():
             )
             recipients.append(kindle_email)
 
-        # Readwise Reader: stuur dezelfde PDF ook naar de Readwise-feed
-        if readwise_email:
-            logger.info(f"📖 Readwise: PDF verzenden naar {readwise_email}...")
-            send_email_with_pdf(
-                pdf_path=pdf_path,
-                sender_email=gmail_user,
-                sender_password=gmail_password,
-                recipient_email=readwise_email,
-                smtp_server=smtp_server,
-                smtp_port=smtp_port,
-                **mail_kwargs,
+        # Readwise Reader: sla de HTML rechtstreeks op. Daardoor ontstaat één
+        # leesbaar document met selecteerbare tekst en native highlights.
+        if readwise_token:
+            local_now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+            if is_magazine:
+                readwise_title = f"{display_title} — {period_label}"
+                readwise_key = (
+                    f"magazine-{magazine_from}-{magazine_to}-"
+                    f"{_slugify(magazine_title or names_label or 'alle_nieuwsbrieven').lower()}"
+                )
+            else:
+                dutch_date = (
+                    f"{local_now.day} {_NL_MONTHS_SHORT[local_now.month]} {local_now.year}"
+                )
+                readwise_title = f"De Dagkrant — {dutch_date}"
+                readwise_key = local_now.date().isoformat()
+            logger.info(
+                f"📖 Readwise: highlightbaar HTML-document opslaan als '{readwise_title}'..."
             )
-            recipients.append(readwise_email)
+            save_html_document(
+                html_content=full_html,
+                access_token=readwise_token,
+                title=readwise_title,
+                source_key=readwise_key,
+                published_date=local_now.isoformat(),
+            )
+            recipients.append("Readwise Reader")
+        else:
+            logger.warning("⚠️ READWISE_TOKEN ontbreekt — geen levering aan Readwise Reader.")
 
         logger.info("\n" + "=" * 60)
         logger.info("DE DAGKRANT IS KLAAR!")
