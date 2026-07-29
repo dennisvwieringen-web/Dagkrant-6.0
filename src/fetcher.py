@@ -180,7 +180,7 @@ def fetch_newsletters(
     hours_back: int = 24,
     since_date: Optional[datetime] = None,
     until_date: Optional[datetime] = None,
-    sender_filter: Optional[str] = None,
+    newsletter_label: Optional[str] = None,
 ) -> list[dict]:
     """
     Haal nieuwsbrieven op uit Gmail via IMAP.
@@ -188,12 +188,14 @@ def fetch_newsletters(
     Standaard wordt `hours_back` gebruikt om het tijdvenster te bepalen (dagelijkse
     editie). Geef `since_date`/`until_date` expliciet mee om een vast datumbereik
     op te vragen (bv. voor een magazine over een hele maand) — dat overschrijft
-    `hours_back`. `sender_filter` beperkt het resultaat tot e-mails waarvan de
-    afzender, het onderwerp óf de Gmail-labelnaam de tekst bevat
-    (case-insensitive substring). Meerdere nieuwsbrieven tegelijk: scheid
-    termen met "|" (of komma's als er geen "|" in zit — "|" is nodig omdat
-    labelnamen zelf komma's kunnen bevatten, zoals "X, Y of Einstein");
-    een e-mail hoeft maar aan één term te voldoen (OR).
+    `hours_back`. `newsletter_label` beperkt het resultaat tot e-mails die onder
+    dát Gmail-sublabel hangen (magazine-modus: precies één nieuwsbrief).
+
+    De match gaat *uitsluitend* op de labelnaam, niet op afzender of onderwerp.
+    Dat is bewust: een magazine is een bundel van één nieuwsbrief, en matchen op
+    onderwerp haalde eerder vreemde nieuwsbrieven binnen die de gekozen naam
+    toevallig noemden (bv. Readwise-mails met "Oliver Burkeman" in het onderwerp).
+    Het label is de enige bron die zegt *van wie* een mail is.
 
     Returns:
         Lijst van dicts met keys: subject, sender, date, label,
@@ -255,18 +257,22 @@ def fetch_newsletters(
 
         seen_message_ids = set()  # Voorkom duplicaten over folders heen
 
-        # Filtertermen: "|" is het scheidingsteken (labelnamen kunnen komma's
-        # bevatten); alleen als er geen "|" staat, splitsen we op komma's.
-        filter_terms = []
-        if sender_filter:
-            splitter = "|" if "|" in sender_filter else ","
-            filter_terms = [t.strip().lower() for t in sender_filter.split(splitter) if t.strip()]
+        wanted_label = newsletter_label.strip().lower() if newsletter_label else ""
 
         for folder in folders_to_search:
             # Leesbare labelnaam: UTF-7 gedecodeerd, zonder "Nieuwsbrieven/"-prefix
             folder_label = _imap_utf7_decode(folder)
             if folder_label.lower().startswith(f"{label.lower()}/"):
                 folder_label = folder_label[len(label) + 1:]
+
+            # Magazine-modus: sla folders die niet de gekozen nieuwsbrief zijn
+            # meteen over — schelt ook het ophalen van al die mails. Een dieper
+            # genest sublabel ("Oliver Burkeman/Archief") hoort er wél bij.
+            if wanted_label:
+                fl = folder_label.lower()
+                if fl != wanted_label and not fl.startswith(f"{wanted_label}/"):
+                    continue
+
             try:
                 status, _ = mail.select(f'"{folder}"', readonly=True)
                 if status != "OK":
@@ -291,11 +297,11 @@ def fetch_newsletters(
                         raw_email = msg_data[0][1]
                         msg = email.message_from_bytes(raw_email)
 
-                        # Dedup op Message-ID over folders heen. Pas op: registreren
-                        # gebeurt pas bij ACCEPTATIE (na het filter, zie onder) —
-                        # dezelfde mail hangt vaak onder meerdere labels (hoofdfolder
-                        # "Nieuwsbrieven" + sublabel), en het label-filter kan 'm in
-                        # de ene folder afwijzen maar in de andere moeten accepteren.
+                        # Dedup op Message-ID over folders heen: dezelfde mail hangt
+                        # vaak onder meerdere labels (hoofdfolder "Nieuwsbrieven" +
+                        # sublabel). Registreren gebeurt pas bij ACCEPTATIE, zodat een
+                        # mail die hier om een andere reden afvalt (geen inhoud) in een
+                        # volgende folder nog een kans krijgt.
                         message_id = msg.get("Message-ID", "")
                         if message_id and message_id in seen_message_ids:
                             continue
@@ -325,20 +331,6 @@ def fetch_newsletters(
 
                         # Extraheer de echte afzender bij doorgestuurde e-mails
                         sender = extract_real_sender(plain_content, html_content, envelope_sender)
-
-                        # Magazine-modus: filter op afzender, onderwerp óf labelnaam
-                        # (case-insensitive substring). Een e-mail hoeft maar aan één
-                        # term te voldoen (OR), zodat één magazine meerdere
-                        # nieuwsbrieven kan bundelen. Labelnaam meenemen is essentieel:
-                        # labels als "Oliver Burkeman" of "Lenny" wijken af van de
-                        # afzendernaam in de mail zelf.
-                        if filter_terms and not any(
-                            t in sender.lower()
-                            or t in subject.lower()
-                            or t in folder_label.lower()
-                            for t in filter_terms
-                        ):
-                            continue
 
                         # Geaccepteerd — nu pas markeren als gezien (zie dedup-opmerking)
                         if message_id:

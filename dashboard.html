@@ -393,7 +393,7 @@
 
     .nl-option:hover { background: color-mix(in srgb, var(--accent-warm) 10%, transparent); }
 
-    .nl-option input[type="checkbox"] {
+    .nl-option input[type="radio"] {
       accent-color: var(--accent-warm);
       margin: 0;
       cursor: pointer;
@@ -727,15 +727,15 @@
   <div class="card full">
     <div class="card-title">Magazine maken</div>
     <p class="run-description">
-      Bundel nieuwsbrieven uit een vast datumbereik in plaats van de laatste 24 uur —
-      bijvoorbeeld alle AI Report-nieuwsbrieven van juni en juli, of alles van
-      Matthijs van Nieuwkerk uit 2026. Geen limiet per afzender.
+      Een magazine bundelt <strong>alle edities van één nieuwsbrief</strong> uit een vast
+      datumbereik — bijvoorbeeld elke Oliver Burkeman van mei tot en met juli.
+      Geen limiet op het aantal edities.
     </p>
 
-    <label>Nieuwsbrief(ven) (optioneel)</label>
+    <label>Nieuwsbrief</label>
     <div class="nl-dropdown" id="nl-dropdown">
       <button type="button" class="nl-toggle" onclick="toggleNlMenu()">
-        <span class="nl-toggle-label" id="nl-toggle-label">Alle nieuwsbrieven (geen filter)</span>
+        <span class="nl-toggle-label" id="nl-toggle-label">Kies een nieuwsbrief…</span>
         <span class="nl-caret">▾</span>
       </button>
       <div class="nl-menu" id="nl-menu" hidden>
@@ -748,9 +748,9 @@
       </div>
     </div>
     <p class="hint">
-      Vink aan welke nieuwsbrieven in het magazine moeten — elke e-mail waarvan het Gmail-label,
-      de afzender óf het onderwerp aan minstens één aangevinkte naam voldoet wordt meegenomen.
-      <strong>Niets aangevinkt = alle nieuwsbrieven uit de periode.</strong>
+      Kies precies één nieuwsbrief — het magazine bevat alleen e-mails die onder dát
+      Gmail-label hangen. Afzender en onderwerp tellen bewust niet mee: anders glipten er
+      nieuwsbrieven van anderen in die de naam toevallig noemen.
       De lijst (= jouw Gmail-labels onder “Nieuwsbrieven”) wordt bewaard in <code>newsletters.json</code> in de repo.
     </p>
 
@@ -766,7 +766,7 @@
     </div>
 
     <label for="mag-title">Titel op de cover (optioneel)</label>
-    <input type="text" id="mag-title" placeholder="leeg = automatisch: Magazine — naam nieuwsbrief(ven)">
+    <input type="text" id="mag-title" placeholder="leeg = automatisch: Magazine — naam nieuwsbrief">
 
     <div class="btn-row">
       <button class="btn btn-run" style="width: auto; flex: 1;" onclick="triggerMagazine()">▶&nbsp; Magazine genereren</button>
@@ -1076,7 +1076,7 @@
   const NEWSLETTERS_FILE = 'newsletters.json';
   let nlList = [];
   let nlSha = null;
-  const nlSelected = new Set();
+  let nlSelected = null;   // precies één nieuwsbrief, of null = nog niets gekozen
 
   async function loadNewsletters() {
     try {
@@ -1103,11 +1103,14 @@
       const row = document.createElement('label');
       row.className = 'nl-option';
       const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = nlSelected.has(name);
+      cb.type = 'radio';
+      cb.name = 'nl-choice';
+      cb.checked = nlSelected === name;
       cb.addEventListener('change', () => {
-        cb.checked ? nlSelected.add(name) : nlSelected.delete(name);
+        // Radio's zijn exclusief: één keuze tegelijk, en het menu mag dicht.
+        nlSelected = name;
         updateNlToggleLabel();
+        document.getElementById('nl-menu').hidden = true;
       });
       const span = document.createElement('span');
       span.className = 'nl-name';
@@ -1129,9 +1132,8 @@
   }
 
   function updateNlToggleLabel() {
-    const sel = nlList.filter(n => nlSelected.has(n));
     document.getElementById('nl-toggle-label').textContent =
-      sel.length ? sel.join(', ') : 'Alle nieuwsbrieven (geen filter)';
+      nlSelected || 'Kies een nieuwsbrief…';
   }
 
   function toggleNlMenu() {
@@ -1162,7 +1164,7 @@
     if (nlList.some(n => n.toLowerCase() === name.toLowerCase())) return;
     nlList.push(name);
     nlList.sort((a, b) => a.localeCompare(b, 'nl', { sensitivity: 'base' }));
-    nlSelected.add(name);
+    nlSelected = name;
     renderNlOptions();
     try {
       await saveNewsletterList(`config: nieuwsbrief '${name}' toegevoegd aan magazine-lijst`);
@@ -1173,7 +1175,7 @@
 
   async function removeNewsletter(name) {
     nlList = nlList.filter(n => n !== name);
-    nlSelected.delete(name);
+    if (nlSelected === name) nlSelected = null;
     renderNlOptions();
     try {
       await saveNewsletterList(`config: nieuwsbrief '${name}' verwijderd uit magazine-lijst`);
@@ -1183,20 +1185,20 @@
   }
 
   async function triggerMagazine() {
-    // "|" als scheidingsteken: labelnamen kunnen zelf komma's bevatten
-    // (bv. "X, Y of Einstein"), dus komma-gescheiden zou stukgaan.
-    const sender = nlList.filter(n => nlSelected.has(n)).join(' | ');
     const from = document.getElementById('mag-from').value;
     const to = document.getElementById('mag-to').value;
     const title = document.getElementById('mag-title').value.trim();
 
+    // Een magazine gaat altijd over één nieuwsbrief — zonder keuze zou de run
+    // alles van de periode bundelen, en dat is nooit de bedoeling.
+    if (!nlSelected) return showStatus('magazine-status', 'error', 'Kies eerst een nieuwsbrief.');
     if (!from || !to) return showStatus('magazine-status', 'error', 'Vul een "vanaf" en "tot en met" datum in.');
     if (from > to) return showStatus('magazine-status', 'error', '"Vanaf" moet vóór of gelijk aan "tot en met" zijn.');
 
-    showStatus('magazine-status', 'loading', 'Magazine-run starten…');
+    showStatus('magazine-status', 'loading', `Magazine-run starten voor ${nlSelected}…`);
     try {
-      await dispatchWorkflow({ mode: 'magazine', sender_filter: sender, date_from: from, date_to: to, title: title });
-      showStatus('magazine-status', 'success', 'Magazine-run gestart! Bekijk de voortgang in GitHub Actions.');
+      await dispatchWorkflow({ mode: 'magazine', newsletter: nlSelected, date_from: from, date_to: to, title: title });
+      showStatus('magazine-status', 'success', `Magazine-run voor ${nlSelected} gestart! Bekijk de voortgang in GitHub Actions.`);
     } catch(e) { showStatus('magazine-status', 'error', `Fout: ${e.message}`); }
   }
 

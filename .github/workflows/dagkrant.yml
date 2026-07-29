@@ -54,8 +54,8 @@ name: De Dagkrant - Nieuwsbundel
         options:
           - dagkrant
           - magazine
-      sender_filter:
-        description: 'Magazine: afzender, onderwerp of label (optioneel)'
+      newsletter:
+        description: 'Magazine: naam van precies een nieuwsbrief (Gmail-label)'
         required: false
         default: ''
       date_from:
@@ -150,7 +150,7 @@ jobs:
           SMTP_SERVER: smtp.gmail.com
           SMTP_PORT: '587'
           MODE: ${{ github.event.inputs.mode || 'dagkrant' }}
-          MAGAZINE_SENDER: ${{ github.event.inputs.sender_filter }}
+          MAGAZINE_NEWSLETTER: ${{ github.event.inputs.newsletter }}
           MAGAZINE_FROM: ${{ github.event.inputs.date_from }}
           MAGAZINE_TO: ${{ github.event.inputs.date_to }}
           MAGAZINE_TITLE: ${{ github.event.inputs.title }}

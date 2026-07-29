@@ -172,10 +172,14 @@ def main():
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
 
-    # Magazine-modus: bundel een vast datumbereik (bv. een hele maand), optioneel
-    # gefilterd op afzender, i.p.v. de dagelijkse 24-uurs editie.
+    # Magazine-modus: bundel álle edities van ÉÉN nieuwsbrief over een vast
+    # datumbereik (bv. een hele maand), i.p.v. de dagelijkse 24-uurs editie.
+    # MAGAZINE_SENDER is de oude naam van dezelfde input; nog gelezen als
+    # fallback zodat een oude workflow-aanroep niet stilvalt.
     is_magazine = os.getenv("MODE", "dagkrant").strip().lower() == "magazine"
-    magazine_sender = os.getenv("MAGAZINE_SENDER", "").strip()
+    magazine_newsletter = (
+        os.getenv("MAGAZINE_NEWSLETTER", "") or os.getenv("MAGAZINE_SENDER", "")
+    ).strip()
     magazine_from = os.getenv("MAGAZINE_FROM", "").strip()
     magazine_to = os.getenv("MAGAZINE_TO", "").strip()
     magazine_title = os.getenv("MAGAZINE_TITLE", "").strip()
@@ -200,6 +204,13 @@ def main():
         logger.error("Magazine-modus vereist MAGAZINE_FROM en MAGAZINE_TO (YYYY-MM-DD).")
         sys.exit(1)
 
+    # Een magazine is per definitie een bundel van één nieuwsbrief. Zonder keuze
+    # zou de run álle nieuwsbrieven van de periode bundelen — dat is een andere
+    # publicatie en nooit wat er bedoeld werd.
+    if is_magazine and not magazine_newsletter:
+        logger.error("Magazine-modus vereist MAGAZINE_NEWSLETTER: de naam van precies één nieuwsbrief.")
+        sys.exit(1)
+
     logger.info("=" * 60)
     if is_magazine:
         logger.info("DE DAGKRANT - Magazine")
@@ -212,15 +223,14 @@ def main():
     if is_magazine:
         since_dt = _parse_local_date(magazine_from)
         until_dt = _parse_local_date(magazine_to) + timedelta(days=1)
-        filter_desc = f" (afzender/onderwerp bevat '{magazine_sender}')" if magazine_sender else ""
         logger.info(
             f"\n📬 Stap 1: Nieuwsbrieven ophalen uit Gmail "
-            f"(magazine: {magazine_from} t/m {magazine_to}{filter_desc})..."
+            f"(magazine '{magazine_newsletter}': {magazine_from} t/m {magazine_to})..."
         )
         newsletters = fetch_newsletters(
             gmail_user, gmail_password,
             since_date=since_dt, until_date=until_dt,
-            sender_filter=magazine_sender or None,
+            newsletter_label=magazine_newsletter,
         )
     else:
         hours_back = _calculate_hours_back()
@@ -552,19 +562,12 @@ def main():
     # --- Stap 5: PDF samenstellen ---
     logger.info("\n📄 Stap 5: PDF genereren...")
     if is_magazine:
-        # Nette weergavenaam van de gekozen nieuwsbrief(ven): "A", "A & B" of "A, B & C".
-        # "|" is het scheidingsteken (labelnamen kunnen komma's bevatten); komma's
-        # alleen als er geen "|" staat (oude aanroepen/handmatige invoer).
-        _splitter = "|" if "|" in magazine_sender else ","
-        magazine_names = [s.strip() for s in magazine_sender.split(_splitter) if s.strip()]
-        if len(magazine_names) > 1:
-            names_label = ", ".join(magazine_names[:-1]) + " & " + magazine_names[-1]
-        else:
-            names_label = magazine_names[0] if magazine_names else ""
-        # Titel: "Magazine — <nieuwsbrief(ven)>", tenzij een eigen covertitel is opgegeven
-        display_title = magazine_title or (f"Magazine — {names_label}" if names_label else "Magazine")
+        # Een magazine bundelt precies één nieuwsbrief, dus de labelnaam ís de titel.
+        names_label = magazine_newsletter
+        # Titel: "Magazine — <nieuwsbrief>", tenzij een eigen covertitel is opgegeven
+        display_title = magazine_title or f"Magazine — {names_label}"
         masthead_title = magazine_title or "Magazine"
-        masthead_subtitle = names_label or "Themabundel"
+        masthead_subtitle = names_label
         period_label = f"{_format_dutch_date_only(magazine_from)} – {_format_dutch_date_only(magazine_to)}"
         cover_html = render_cover_page(
             newsletters, toc_entries,
@@ -616,7 +619,7 @@ def main():
                 f"De Dagkrant"
             )
             mail_kwargs["filename"] = (
-                f"Magazine_{_slugify(magazine_title or names_label or 'alle_nieuwsbrieven')}"
+                f"Magazine_{_slugify(magazine_title or names_label)}"
                 f"_{magazine_from}_tot_{magazine_to}.pdf"
             )
 
@@ -667,7 +670,7 @@ def main():
                 readwise_title = f"{display_title} — {period_label}"
                 readwise_key = (
                     f"magazine-{magazine_from}-{magazine_to}-"
-                    f"{_slugify(magazine_title or names_label or 'alle_nieuwsbrieven').lower()}"
+                    f"{_slugify(magazine_title or names_label).lower()}"
                 )
             else:
                 dutch_date = (
