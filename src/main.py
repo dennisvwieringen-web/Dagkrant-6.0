@@ -159,7 +159,13 @@ def main():
     gmail_password = os.getenv("GMAIL_APP_PASSWORD")
     openai_api_key = os.getenv("OPENAI_API_KEY")
     target_email = os.getenv("TARGET_EMAIL")
+    # Tijdelijk gepauzeerd op verzoek van Dennis (20 juli 2026) voor wgn@fioretti.nl —
+    # zet terug op True om de verzending naar TARGET_EMAIL te hervatten.
+    target_email_enabled = False
     kindle_email = os.getenv("KINDLE_EMAIL")  # optioneel
+    # Tijdelijk gepauzeerd op verzoek van Dennis (29 juli 2026): tot nader order
+    # alleen Readwise, geen Kindle-verzending. Zet terug op True om te hervatten.
+    kindle_enabled = False
     # Reader API: één highlightbaar HTML-document per editie. De oude feedmail
     # met PDF-bijlage is bewust vervallen, omdat Readwise daar twee items van maakte.
     readwise_token = os.getenv("READWISE_TOKEN", "").strip()
@@ -614,15 +620,18 @@ def main():
                 f"_{magazine_from}_tot_{magazine_to}.pdf"
             )
 
-        send_email_with_pdf(
-            pdf_path=pdf_path,
-            sender_email=gmail_user,
-            sender_password=gmail_password,
-            recipient_email=target_email,
-            smtp_server=smtp_server,
-            smtp_port=smtp_port,
-            **mail_kwargs,
-        )
+        if target_email_enabled:
+            send_email_with_pdf(
+                pdf_path=pdf_path,
+                sender_email=gmail_user,
+                sender_password=gmail_password,
+                recipient_email=target_email,
+                smtp_server=smtp_server,
+                smtp_port=smtp_port,
+                **mail_kwargs,
+            )
+        else:
+            logger.info(f"⏸️  TARGET_EMAIL-verzending is gepauzeerd — niet verstuurd naar {target_email}.")
 
         # Editie is verstuurd — registreer alle meegewogen mails in de
         # verzonden-administratie zodat het 72-uursvenster geen duplicaten geeft.
@@ -632,10 +641,10 @@ def main():
                 seen_ids[mid] = sent_stamp
             _save_seen_ids(seen_path, seen_ids)
 
-        recipients = [target_email]
+        recipients = [target_email] if target_email_enabled else []
 
         # Kindle: stuur dezelfde PDF ook naar de Kindle-e-reader
-        if kindle_email:
+        if kindle_email and kindle_enabled:
             logger.info(f"📚 Kindle: PDF verzenden naar {kindle_email}...")
             send_email_with_pdf(
                 pdf_path=pdf_path,
@@ -647,6 +656,8 @@ def main():
                 **mail_kwargs,
             )
             recipients.append(kindle_email)
+        elif kindle_email:
+            logger.info(f"⏸️  Kindle-verzending is gepauzeerd — niet verstuurd naar {kindle_email}.")
 
         # Readwise Reader: sla de HTML rechtstreeks op. Daardoor ontstaat één
         # leesbaar document met selecteerbare tekst en native highlights.
