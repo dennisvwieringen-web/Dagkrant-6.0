@@ -53,10 +53,12 @@ def _is_permanent_error(exc: Exception) -> bool:
     return any(marker in text for marker in _PERMANENT_ERROR_MARKERS)
 
 # Heuristiek voor taaldetectie op basis van veelvoorkomende woorden.
-# Let op: "is" en "in" zijn bewust NIET in de Engels-markers opgenomen —
-# ze komen ook als gewone Nederlandse woorden voor en vervuilen anders de score.
 _DUTCH_MARKERS = {
-    "de", "het", "een", "van", "in", "is", "dat", "op", "voor", "met",
+    # "is" en "in" bewust weggelaten — net als bij de Engelse markers hieronder:
+    # ze komen in beide talen evengoed voor en gaven de Nederlandse score een
+    # oneerlijke voorsprong (elke gewone Engelse tekst bevat volop "is"/"in",
+    # maar kreeg daar tot voor kort geen Engels tegenwicht voor terug).
+    "de", "het", "een", "van", "dat", "op", "voor", "met",
     "zijn", "aan", "niet", "ook", "maar", "door", "nog", "dan", "wel",
     "naar", "uit", "bij", "om", "tot", "over", "deze", "wordt", "meer",
     "heeft", "worden", "kan", "dit", "alle", "hun", "veel", "waar",
@@ -119,38 +121,87 @@ def detect_language(html_content: str) -> str:
         return "en"
 
 
-def translate_html(html_content: str, openai_api_key: str) -> str:
+def translate_html(html_content: str, openai_api_key: str) -> tuple[str, bool]:
     """
-    Vertaal Engelse HTML-content naar het Nederlands met behoud van
-    HTML-structuur en originele toon.
+    Vertaal de Engelse delen van HTML-content naar het Nederlands, met behoud
+    van HTML-structuur en originele toon.
+
+    Werkt op blokniveau (top-level HTML-elementen), niet op het hele document:
+    sommige nieuwsbrieven bundelen Engelse en Nederlandse fragmenten in één mail
+    (bv. Readwise's dagelijkse digest, die highlights uit boeken in beide talen
+    samenvoegt). Een taalbeslissing over het HELE document liet dan de Engelse
+    stukken onvertaald staan zodra Nederlandse tekst in het geheel overheerste.
+    Aangrenzende blokken met dezelfde taal worden samengevoegd tot een chunk
+    (tot max_chunk_size), zodat vertalen niet per zin een aparte API-aanroep kost.
 
     Args:
-        html_content: De HTML-string om te vertalen.
+        html_content: De HTML-string om te (deels) te vertalen.
         openai_api_key: OpenAI API key.
 
     Returns:
-        Vertaalde HTML-string.
+        (html, was_translated) — was_translated is True zodra minstens één
+        blok daadwerkelijk naar het Nederlands vertaald is.
     """
     client = OpenAI(api_key=openai_api_key)
 
-    # Splits de HTML in behapbare stukken als het te groot is.
-    # Bewust ruim onder de output-tokenlimiet van gpt-4o-mini: bij ~8000 tekens
-    # invoer past de vertaling comfortabel binnen max_tokens, zodat het model niet
-    # halverwege afkapt (finish_reason="length") en er geen Engelse staart blijft staan.
-    max_chunk_size = 8000
+    # Verlaagd van 8000: bij lange, markup-zware nieuwsbrieven (veel geneste
+    # <table>/inline-style opmaak, zoals Lenny's Newsletter) kon een chunk van
+    # 8000 tekens tóch over de output-tokenlimiet van gpt-4o-mini heen gaan en
+    # halverwege afkappen (finish_reason="length") — met een Engelse staart
+    # tot gevolg. _translate_chunk() splitst zo'n chunk nu alsnog verder bij
+    # afkapping (zie daar), maar een kleinere start-chunk maakt dat minder nodig.
+    max_chunk_size = 6000
 
-    if len(html_content) <= max_chunk_size:
-        return _translate_chunk(client, html_content)
+    grouped = _group_by_language(html_content, max_chunk_size)
+    if not grouped:
+        return html_content, False
 
-    # Splits op top-level HTML-elementen
-    chunks = _split_html(html_content, max_chunk_size)
-    translated_chunks = []
-    for i, chunk in enumerate(chunks):
-        logger.info(f"  Vertalen deel {i + 1}/{len(chunks)}...")
-        translated = _translate_chunk(client, chunk)
-        translated_chunks.append(translated)
+    was_translated = False
+    result_parts = []
+    for chunk_html, lang in grouped:
+        if lang != "en":
+            result_parts.append(chunk_html)
+            continue
+        logger.info(f"  Vertalen blok ({len(chunk_html)} tekens)...")
+        result_parts.append(_translate_chunk(client, chunk_html))
+        was_translated = True
 
-    return "".join(translated_chunks)
+    return "".join(result_parts), was_translated
+
+
+def _group_by_language(html_content: str, max_chunk_size: int) -> list[tuple[str, str]]:
+    """
+    Groepeer aangrenzende top-level HTML-elementen per gedetecteerde taal tot
+    chunks van maximaal max_chunk_size tekens.
+
+    Elementen zonder eigen (genoeg) tekst — een los plaatje, een scheidingslijn —
+    forceren geen taalwissel: ze sluiten aan bij de lopende groep, zodat zo'n
+    element een doorlopend Engels of Nederlands blok niet nodeloos opknipt.
+    """
+    grouped: list[tuple[str, str]] = []
+    current_html = ""
+    current_lang: str | None = None
+
+    for element_str in _iter_elements(html_content, max_chunk_size):
+        if _has_translatable_text(element_str):
+            lang = detect_language(element_str)
+        elif current_lang is not None:
+            lang = current_lang
+        else:
+            lang = "nl"
+
+        if current_lang == lang and len(current_html) + len(element_str) <= max_chunk_size:
+            current_html += element_str
+        else:
+            if current_html:
+                grouped.append((current_html, current_lang))
+            current_html = element_str
+            current_lang = lang
+
+    if current_html:
+        grouped.append((current_html, current_lang))
+
+    return grouped
 
 
 _TRANSLATE_SYSTEM_PROMPT = (
@@ -180,16 +231,23 @@ _TRANSLATE_SYSTEM_PROMPT = (
 )
 
 
-def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> str:
+def _translate_chunk(
+    client: OpenAI, html_chunk: str, max_attempts: int = 3, _min_split_size: int = 1500
+) -> str:
     """
     Vertaal een enkel stuk HTML via de OpenAI API.
 
-    Robuust tegen de twee manieren waarop een chunk stil Engels kon blijven:
-    (1) een API-fout of lege/None-respons die het origineel teruggaf, en
-    (2) een respons die (deels) onvertaald Engels bleef. Bij beide wordt opnieuw
-    geprobeerd (tot max_attempts). Pas als álle pogingen falen valt de functie
-    terug op het origineel — beter imperfect dan een crash, maar dat is nu de
-    uitzondering, niet de stille regel.
+    Robuust tegen de drie manieren waarop een chunk stil Engels kon blijven:
+    (1) een API-fout of lege/None-respons die het origineel teruggaf,
+    (2) een respons die (deels) onvertaald Engels bleef, en
+    (3) een respons die halverwege afkapte op de output-tokenlimiet
+    (finish_reason="length") — geobserveerd bij lange, markup-zware
+    nieuwsbrieven (bv. Lenny's Newsletter). Bij (1) en (2) wordt opnieuw
+    geprobeerd (tot max_attempts); bij (3) wordt de chunk in tweeën gesplitst
+    en apart vertaald (zie _translate_split), zodat er geen Engelse staart
+    overblijft die de taalcheck toch als "grotendeels Nederlands" doorlaat.
+    Pas als het echt niet anders kan (chunk niet verder deelbaar) valt de
+    functie terug op het (afgekapte) resultaat — beter imperfect dan een crash.
 
     Uitzondering: bij een permanente fout (krediet op, key ongeldig) wordt géén
     poging herhaald en gaat er een OpenAIUnavailableError omhoog. Retryen zou daar
@@ -223,12 +281,20 @@ def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> 
             translated = content.strip()
 
             # Truncatie: het model kapte af op de tokenlimiet. De staart is dan
-            # onvertaald/afgebroken. Kleinere chunk bij de volgende poging helpt niet
-            # (zelfde chunk), dus log het duidelijk maar accepteer wat er is.
+            # onvertaald/afgebroken. Dezelfde chunk nog eens proberen helpt niet
+            # (identieke input geeft dezelfde afkap) — splits 'm in plaats daarvan
+            # in tweeën en vertaal de helften apart. Alleen als de chunk al te
+            # klein is om nog te splitsen, accepteren we het afgekapte resultaat.
             if getattr(choice, "finish_reason", None) == "length":
+                if len(html_chunk) > _min_split_size:
+                    logger.warning(
+                        f"  ⚠️ Vertaling afgekapt op tokenlimiet ({len(html_chunk)} tekens "
+                        f"chunk) — splits in tweeën en probeer opnieuw."
+                    )
+                    return _translate_split(client, html_chunk)
                 logger.warning(
-                    f"  ⚠️ Vertaling afgekapt op tokenlimiet ({len(html_chunk)} tekens chunk) — "
-                    f"resultaat mogelijk onvolledig."
+                    f"  ⚠️ Vertaling afgekapt op tokenlimiet ({len(html_chunk)} tekens chunk, "
+                    f"al op minimumgrootte) — resultaat mogelijk onvolledig."
                 )
 
             # Verifieer dat er daadwerkelijk vertaald is. Blijft het resultaat Engels,
@@ -265,6 +331,21 @@ def _translate_chunk(client: OpenAI, html_chunk: str, max_attempts: int = 3) -> 
     return last_result
 
 
+def _translate_split(client: OpenAI, html_chunk: str) -> str:
+    """
+    Splits een chunk die tegen de output-tokenlimiet afkapte in twee helften
+    langs element-grenzen en vertaal ze apart. Voorkomt dat een lange,
+    markup-zware nieuwsbrief (bv. Lenny's Newsletter) halverwege een
+    onvertaalde Engelse staart overhoudt.
+    """
+    halves = _split_html(html_chunk, max(len(html_chunk) // 2, 1))
+    if len(halves) < 2:
+        # Niet verder te splitsen (één ondeelbaar element, bv. kale tekst
+        # zonder tags) — meer valt er niet aan te doen dan het te accepteren.
+        return halves[0] if halves else html_chunk
+    return "".join(_translate_chunk(client, half) for half in halves)
+
+
 def _has_translatable_text(html_chunk: str, min_words: int = 12) -> bool:
     """
     True als de chunk genoeg gewone tekstwoorden bevat om een taalverificatie
@@ -276,38 +357,42 @@ def _has_translatable_text(html_chunk: str, min_words: int = 12) -> bool:
     return len(words) >= min_words
 
 
-def _split_html(html_content: str, max_size: int) -> list[str]:
+def _iter_elements(html_content: str, max_leaf_size: int):
     """
-    Splits HTML in stukken van maximaal max_size tekens.
+    Enumereer top-level HTML-elementen zonder ze samen te voegen.
 
-    Werkt recursief: als een top-level element zelf groter is dan max_size
-    (typisch bij Substack-stijl HTML met één grote geneste <table>),
-    wordt er dieper in de boom gezocht naar splitspunten.
+    Werkt recursief: als een top-level element zelf groter is dan max_leaf_size
+    (typisch bij Substack-stijl HTML met één grote geneste <table>), wordt er
+    dieper in de boom gezocht naar kleinere elementen. Gebruikt door zowel
+    _split_html (samenvoegen tot een grootte-chunk) als _group_by_language
+    (samenvoegen tot een taal-chunk) — die twee mogen elementen niet op
+    dezelfde manier groeperen, dus de enumeratie zelf is de gedeelde stap.
     """
     soup = BeautifulSoup(html_content, "html.parser")
     body = soup.find("body") or soup
 
+    def _walk(elements):
+        for element in elements:
+            element_str = str(element)
+            if len(element_str) > max_leaf_size and hasattr(element, "children"):
+                yield from _walk(list(element.children))
+            else:
+                yield element_str
+
+    yield from _walk(list(body.children))
+
+
+def _split_html(html_content: str, max_size: int) -> list[str]:
+    """Splits HTML in stukken van maximaal max_size tekens."""
     chunks: list[str] = []
     current_chunk: str = ""
 
-    def _collect(elements) -> None:
-        nonlocal current_chunk
-        for element in elements:
-            element_str = str(element)
-
-            if len(element_str) > max_size and hasattr(element, "children"):
-                # Element te groot — recursief afdalen in de kinderen
-                _collect(list(element.children))
-
-            elif len(current_chunk) + len(element_str) > max_size and current_chunk:
-                # Huidige chunk vol — sla op en begin nieuw
-                chunks.append(current_chunk)
-                current_chunk = element_str
-
-            else:
-                current_chunk += element_str
-
-    _collect(list(body.children))
+    for element_str in _iter_elements(html_content, max_size):
+        if len(current_chunk) + len(element_str) > max_size and current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = element_str
+        else:
+            current_chunk += element_str
 
     if current_chunk:
         chunks.append(current_chunk)

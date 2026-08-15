@@ -12,6 +12,7 @@ triggert de cloud-run om 14:30). Elke run → 72 uur terugkijken; de
 verzonden-administratie (Actions-cache) voorkomt duplicaten tussen edities.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -72,8 +73,8 @@ def _get_truly_visible_text(html: str) -> str:
 
 # Terugkijkvenster: 72 uur (i.p.v. 24) zodat handmatig gelabelde mails die pas
 # een dag of twee na ontvangst hun label krijgen alsnog worden meegenomen. De
-# verzonden-administratie (zie _load_seen_ids/_save_seen_ids) voorkomt dat een
-# mail die al in een eerdere editie zat opnieuw verstuurd wordt.
+# verzonden-administratie (zie _load_seen/_save_seen) voorkomt dat een mail
+# die al in een eerdere editie zat opnieuw verstuurd wordt.
 _HOURS_BACK = 72
 
 
@@ -84,11 +85,31 @@ def _calculate_hours_back() -> int:
 
 
 # ── Verzonden-administratie ────────────────────────────────────────────────
-# JSON-bestand met {message-id-of-url: iso-datum-van-verzending}. In GitHub
-# Actions leeft dit in de Actions-cache (zie dagkrant.yml, key dagkrant-seen-*);
-# lokaal in logs/ (gitignored). Alleen de dagkrant gebruikt dit — een magazine
-# bundelt bewust een vaste periode en raakt de administratie niet aan.
+# JSON-bestand met twee onderdelen: "message_ids" ({message-id-of-url:
+# iso-datum}) voor exacte dubbelingen, en "content" (lijst van
+# inhoud-fingerprints) voor artikelen die WEL een nieuw bericht zijn maar
+# grotendeels dezelfde tekst herhalen — bv. Readwise's "Sunday Favorites" die
+# highlights van eerder die week hergroepeert, of een nieuwsbrief die zijn
+# eigen stuk van een dag eerder samenvat. Message-ID-dedup ving dat niet:
+# andere afzender-mail, ander onderwerp, dus "nieuw" volgens die check.
+# In GitHub Actions leeft dit in de Actions-cache (zie dagkrant.yml, key
+# dagkrant-seen-*); lokaal in logs/ (gitignored). Alleen de dagkrant gebruikt
+# dit — een magazine bundelt bewust een vaste periode en raakt het niet aan.
 _SEEN_RETENTION_DAYS = 8  # ruim boven het 72-uursvenster
+_CONTENT_RETENTION_DAYS = 8  # zelfde horizon als de message-id-administratie
+
+# Inhoud-fingerprint: hashes van opeenvolgende woordgroepjes ("shingles").
+# k=8 is bewust specifiek — een toevallige overlap van 8 exact dezelfde
+# woorden op rij is zeldzaam, dus weinig kans op een fout-positieve match.
+_CONTENT_SHINGLE_K = 8
+# Jaccard-overlap vanaf hier telt als inhoudelijk duplicaat. Niet empirisch
+# gekalibreerd tegen echte recap-mails (die had ik niet voorhanden) — begin
+# hiermee en draai bij als er ten onrechte iets wordt overgeslagen of juist
+# een duidelijke herhaling doorglipt.
+_CONTENT_DUP_THRESHOLD = 0.5
+# Cap op de tekstlengte vóór het shingelen: houdt de fingerprint (en dus het
+# bewaarde JSON-bestand) klein, ook bij een lang artikel als Lenny's Newsletter.
+_CONTENT_FINGERPRINT_CHARS = 4000
 
 
 def _seen_ids_path() -> str:
@@ -96,34 +117,95 @@ def _seen_ids_path() -> str:
     return os.getenv("SEEN_IDS_FILE", os.path.join("..", "logs", "seen_ids.json"))
 
 
-def _load_seen_ids(path: str) -> dict | None:
+def _load_seen(path: str) -> dict | None:
     """Lees de administratie; None als het bestand (nog) niet bestaat."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except FileNotFoundError:
         return None
     except Exception as e:
         logger.warning(f"Verzonden-administratie onleesbaar ({e}) — start met lege lijst.")
-        return {}
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    # Migratie: oudere bestanden waren een platte {message-id: datum}-map
+    # zonder "content"-fingerprints.
+    if "message_ids" not in data:
+        data = {"message_ids": data, "content": []}
+    data.setdefault("message_ids", {})
+    data.setdefault("content", [])
+    return data
 
 
-def _save_seen_ids(path: str, seen: dict) -> None:
-    """Schrijf de administratie; snoei items ouder dan _SEEN_RETENTION_DAYS."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_SEEN_RETENTION_DAYS)
-    pruned = {}
-    for mid, stamp in seen.items():
+def _save_seen(path: str, seen: dict) -> None:
+    """Schrijf de administratie; snoei items ouder dan hun bewaartermijn."""
+    now = datetime.now(timezone.utc)
+    id_cutoff = now - timedelta(days=_SEEN_RETENTION_DAYS)
+    content_cutoff = now - timedelta(days=_CONTENT_RETENTION_DAYS)
+
+    pruned_ids = {}
+    for mid, stamp in seen.get("message_ids", {}).items():
         try:
-            if datetime.fromisoformat(stamp) >= cutoff:
-                pruned[mid] = stamp
+            if datetime.fromisoformat(stamp) >= id_cutoff:
+                pruned_ids[mid] = stamp
         except (ValueError, TypeError):
             continue
+
+    pruned_content = []
+    for entry in seen.get("content", []):
+        try:
+            if datetime.fromisoformat(entry.get("date", "")) >= content_cutoff:
+                pruned_content.append(entry)
+        except (ValueError, TypeError):
+            continue
+
+    pruned = {"message_ids": pruned_ids, "content": pruned_content}
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(pruned, f, ensure_ascii=False, indent=1)
-    logger.info(f"Verzonden-administratie bijgewerkt: {len(pruned)} item(s) ({path}).")
+    logger.info(
+        f"Verzonden-administratie bijgewerkt: {len(pruned_ids)} id's, "
+        f"{len(pruned_content)} inhoud-fingerprint(s) ({path})."
+    )
+
+
+def _shingle_fingerprint(text: str, k: int = _CONTENT_SHINGLE_K) -> list[int]:
+    """
+    Maak een compacte, deterministische vingerafdruk van doorlopende tekst:
+    hashes van opeenvolgende woordgroepjes van k woorden ("shingles").
+
+    Deterministisch via hashlib (niet Python's ingebouwde hash()): elke run
+    is een nieuw proces met een gerandomiseerde hash-seed, dus dezelfde tekst
+    zou in twee runs andere hash()-waarden geven en vergelijken zou nooit iets
+    vinden.
+    """
+    words = re.findall(r"\w+", text.lower()[:_CONTENT_FINGERPRINT_CHARS])
+    if len(words) < k:
+        return []
+    shingles = {" ".join(words[i:i + k]) for i in range(len(words) - k + 1)}
+    return [
+        int.from_bytes(hashlib.md5(s.encode("utf-8")).digest()[:8], "big")
+        for s in shingles
+    ]
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _is_content_duplicate(fingerprint: list[int], recent: list[dict]) -> bool:
+    """True als deze fingerprint sterk overlapt met een eerder afgeleverd artikel."""
+    fp_set = set(fingerprint)
+    if not fp_set:
+        return False
+    return any(
+        _jaccard(fp_set, set(entry.get("shingles", []))) >= _CONTENT_DUP_THRESHOLD
+        for entry in recent
+    )
 
 
 _NL_MONTHS_SHORT = {
@@ -242,25 +324,25 @@ def main():
     # --- Verzonden-administratie: filter wat al in een eerdere editie zat ---
     # Het 72-uursvenster geeft laat-gelabelde mails alsnog een kans; deze
     # administratie voorkomt dat de rest drie dagen achter elkaar meekomt.
-    seen_ids: dict | None = None
+    seen: dict | None = None
     seen_path = _seen_ids_path()
     first_seen_run = False
     if not is_magazine:
-        seen_ids = _load_seen_ids(seen_path)
-        first_seen_run = seen_ids is None
+        seen = _load_seen(seen_path)
+        first_seen_run = seen is None
         if first_seen_run:
             # Overgang van 24u → 72u: mails ouder dan 24 uur zaten (mits op tijd
             # gelabeld) al in eerdere edities. Markeer ze als gedekt zonder te
             # versturen, anders krijgt de eerste run een golf aan duplicaten.
             logger.info("Geen verzonden-administratie gevonden — eerste run met 72-uursvenster; "
                         "mails ouder dan 24 uur worden als al-gedekt gemarkeerd.")
-            seen_ids = {}
+            seen = {"message_ids": {}, "content": []}
         now_utc = datetime.now(timezone.utc)
         recent_cutoff = now_utc - timedelta(hours=24)
         kept = []
         for nl in newsletters:
             mid = nl.get("message_id", "")
-            if mid and mid in seen_ids:
+            if mid and mid in seen["message_ids"]:
                 logger.info(f"  ⏭ Al in eerdere editie: '{nl['subject'][:60]}'")
                 continue
             if first_seen_run:
@@ -270,7 +352,7 @@ def main():
                     nl_date = now_utc
                 if nl_date < recent_cutoff:
                     if mid:
-                        seen_ids[mid] = now_utc.isoformat()
+                        seen["message_ids"][mid] = now_utc.isoformat()
                     continue
             kept.append(nl)
         if len(kept) != len(newsletters):
@@ -289,7 +371,7 @@ def main():
             hours_back=24 if first_seen_run else hours_back,
         )
         for url in article_urls:
-            if seen_ids is not None and url in seen_ids:
+            if seen is not None and url in seen["message_ids"]:
                 logger.info(f"  ⏭ Al in eerdere editie: {url}")
                 continue
             article = fetch_article(url)
@@ -303,8 +385,8 @@ def main():
             logger.info("Geen nieuwsbrieven gevonden voor dit magazine-filter. Klaar!")
         else:
             logger.info(f"Geen nieuwsbrieven of artikelen gevonden in de laatste {hours_back} uur. Klaar!")
-            if seen_ids is not None:
-                _save_seen_ids(seen_path, seen_ids)  # bewaar evt. eerste-run-markeringen
+            if seen is not None:
+                _save_seen(seen_path, seen)  # bewaar evt. eerste-run-markeringen
         return
 
     # Sorteer op datum (nieuwste eerst)
@@ -390,51 +472,59 @@ def main():
             # Stap 2d: Dubbele titels verwijderen
             nl["html_content"] = deduplicate_title(nl["html_content"], subject)
 
-            # Stap 3: Taaldetectie + vertaling
+            # Stap 3: Vertaling. translate_html() beslist zelf per HTML-blok of
+            # het Engels is (zie translator.py) — dit vangt gemengde nieuwsbrieven
+            # zoals Readwise's dagelijkse digest, die Engelse en Nederlandse
+            # highlights in één mail bundelt. Een taalbeslissing over het HELE
+            # document (het oude gedrag) liet dan de Engelse stukken onvertaald
+            # zodra Nederlandse tekst in het geheel overheerste.
+            # `lang` hieronder is alleen voor logging/openai_down-boodschap —
+            # gate NIET langer of translate_html() wordt aangeroepen.
             lang = detect_language(nl["html_content"])
-            nl["was_translated"] = (lang == "en")
-            logger.info(f"    Taal: {lang.upper()}")
+            nl["was_translated"] = False
+            logger.info(f"    Taal (document): {lang.upper()}")
 
-            if lang == "en" and openai_down:
-                # OpenAI is deze run al uitgevallen — niet opnieuw proberen, het
-                # Engelse origineel blijft gewoon staan.
-                nl["was_translated"] = False
-                logger.warning(
-                    f"    ⚠️ OpenAI onbereikbaar — '{subject}' blijft Engels."
-                )
-            elif lang == "en":
-                logger.info(f"    Vertalen naar Nederlands...")
+            if openai_down:
+                # OpenAI is deze run al uitgevallen — niet opnieuw proberen, de
+                # nieuwsbrief blijft ongewijzigd staan.
+                if lang == "en":
+                    logger.warning(
+                        f"    ⚠️ OpenAI onbereikbaar — '{subject}' blijft Engels."
+                    )
+            else:
                 pre_translation_html = nl["html_content"]
                 try:
-                    translated = translate_html(nl["html_content"], openai_api_key)
+                    translated, was_translated = translate_html(nl["html_content"], openai_api_key)
                 except OpenAIUnavailableError as e:
                     # Krediet op / key ongeldig: dit raakt élk artikel, niet alleen
-                    # dit ene. Behoud het Engelse origineel (niet droppen) en onthoud
-                    # dat OpenAI weg is, zodat de rest niet nutteloos opnieuw probeert.
+                    # dit ene. Behoud het origineel (niet droppen) en onthoud dat
+                    # OpenAI weg is, zodat de rest niet nutteloos opnieuw probeert.
                     openai_down = True
-                    nl["was_translated"] = False
                     logger.warning(
                         f"    ⚠️ OpenAI onbereikbaar ({e}) — '{subject}' blijft "
-                        f"Engels. Resterende artikelen worden ook niet vertaald."
+                        f"onvertaald. Resterende artikelen worden ook niet vertaald."
                     )
                 else:
-                    # Vertaler kan code-fence artefacten toevoegen (```html ... ```)
-                    translated = strip_ai_artifacts(translated)
-
-                    # VANGNET B: als de vertaling (bijna) leeg terugkomt terwijl het
-                    # Engelse origineel wél inhoud had, behoud dan het origineel i.p.v.
-                    # het artikel te droppen. Engels lezen is beter dan een leeg artikel
-                    # (geobserveerd bij o.a. The New Yorker).
-                    if len(_get_truly_visible_text(translated)) >= 100:
-                        nl["html_content"] = translated
-                        logger.info(f"    Vertaling voltooid.")
+                    if not was_translated:
+                        logger.info(f"    Geen Engelse blokken gevonden — niets te vertalen.")
                     else:
-                        nl["html_content"] = pre_translation_html
-                        nl["was_translated"] = False
-                        logger.warning(
-                            f"    ↩ '{subject}': vertaling leverde lege inhoud — "
-                            f"behoud het Engelse origineel."
-                        )
+                        # Vertaler kan code-fence artefacten toevoegen (```html ... ```)
+                        translated = strip_ai_artifacts(translated)
+
+                        # VANGNET B: als de vertaling (bijna) leeg terugkomt terwijl het
+                        # Engelse origineel wél inhoud had, behoud dan het origineel i.p.v.
+                        # het artikel te droppen. Engels lezen is beter dan een leeg artikel
+                        # (geobserveerd bij o.a. The New Yorker).
+                        if len(_get_truly_visible_text(translated)) >= 100:
+                            nl["html_content"] = translated
+                            nl["was_translated"] = True
+                            logger.info(f"    Vertaling voltooid.")
+                        else:
+                            nl["html_content"] = pre_translation_html
+                            logger.warning(
+                                f"    ↩ '{subject}': vertaling leverde lege inhoud — "
+                                f"behoud het origineel."
+                            )
 
             # FINALE VEILIGHEIDSCHECK: meet de echt zichtbare tekst na ALLE
             # verwerking (cleaning + deduplicate_title + vertaling).
@@ -448,6 +538,22 @@ def main():
                 )
                 continue
 
+            # Stap 3b: Inhoudelijke dedup — vangt een NIEUW bericht (ander
+            # message-ID, ander onderwerp) dat grotendeels dezelfde tekst
+            # herhaalt als iets dat de afgelopen dagen al is afgeleverd. Bv.
+            # Readwise's "Sunday Favorites" (hergroepeert highlights van
+            # eerder die week) of een wekelijkse "lectuur op zaterdag"-rubriek
+            # die eerdere artikelen samenvat. Message-ID-dedup ziet dit niet:
+            # voor die check is het gewoon een nieuwe, unieke mail.
+            content_fp = _shingle_fingerprint(final_visible)
+            if seen is not None and _is_content_duplicate(content_fp, seen["content"]):
+                logger.info(
+                    f"  ⏭ '{subject}' lijkt inhoudelijk sterk op iets uit een "
+                    f"eerdere editie — overgeslagen."
+                )
+                continue
+
+            nl["_content_fingerprint"] = content_fp
             processed.append(nl)
 
         except OpenAIUnavailableError as e:
@@ -636,13 +742,18 @@ def main():
         else:
             logger.info(f"⏸️  TARGET_EMAIL-verzending is gepauzeerd — niet verstuurd naar {target_email}.")
 
-        # Editie is verstuurd — registreer alle meegewogen mails in de
-        # verzonden-administratie zodat het 72-uursvenster geen duplicaten geeft.
-        if seen_ids is not None:
+        # Editie is verstuurd — registreer alle meegewogen mails én de
+        # inhoud-fingerprints van wat daadwerkelijk verstuurd is, zodat het
+        # 72-uursvenster geen exacte of inhoudelijke duplicaten meer geeft.
+        if seen is not None:
             sent_stamp = datetime.now(timezone.utc).isoformat()
             for mid in edition_ids:
-                seen_ids[mid] = sent_stamp
-            _save_seen_ids(seen_path, seen_ids)
+                seen["message_ids"][mid] = sent_stamp
+            for nl in newsletters:
+                fp = nl.get("_content_fingerprint")
+                if fp:
+                    seen["content"].append({"date": sent_stamp, "shingles": fp})
+            _save_seen(seen_path, seen)
 
         recipients = [target_email] if target_email_enabled else []
 
