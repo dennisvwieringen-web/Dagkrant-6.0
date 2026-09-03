@@ -241,9 +241,8 @@ def main():
     gmail_password = os.getenv("GMAIL_APP_PASSWORD")
     openai_api_key = os.getenv("OPENAI_API_KEY")
     target_email = os.getenv("TARGET_EMAIL")
-    # Tijdelijk gepauzeerd op verzoek van Dennis (20 juli 2026) voor wgn@fioretti.nl —
-    # zet terug op True om de verzending naar TARGET_EMAIL te hervatten.
-    target_email_enabled = False
+    # Hervat op verzoek van Dennis (3 sept 2026) — was gepauzeerd sinds 20 juli 2026.
+    target_email_enabled = True
     kindle_email = os.getenv("KINDLE_EMAIL")  # optioneel
     # Tijdelijk gepauzeerd op verzoek van Dennis (29 juli 2026): tot nader order
     # alleen Readwise, geen Kindle-verzending. Zet terug op True om te hervatten.
