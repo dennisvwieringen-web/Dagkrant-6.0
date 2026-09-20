@@ -1,31 +1,32 @@
 name: De Dagkrant - Nieuwsbundel
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RICHTTIJD: KRANT KLAAR OM 09:00, ELKE DAG (sinds 17 juli 2026; was 15:00
-# op ma/wo/do/vr).
+# WEEKKRANT: ELKE VRIJDAG, KLAAR VOOR DE PRINT OM 12:00 (sinds 20 september
+# 2026; daarvoor een dagkrant). Dennis print de krant vrijdag om 12:00 en leest
+# hem in het weekend. Het terugkijkvenster is 8 dagen (zie main.py).
 #
-# PRIMAIRE TRIGGER: een Windows Taakplanner-taak ("Dagkrant-0830") op de pc van
-# Dennis roept dagelijks om 08:30 via run_dagkrant.ps1 de GitHub-API
+# PRIMAIRE TRIGGER: een Windows Taakplanner-taak ("Weekkrant-Vrijdag") op de pc
+# van Dennis roept elke vrijdag om 08:00 via run_dagkrant.ps1 de GitHub-API
 # `workflow_dispatch` aan. Die start binnen seconden — GEEN GitHub-wachtrij — en
 # de krant wordt vervolgens HIER IN DE CLOUD opgehaald, vertaald, gerenderd en
-# gemaild. De trigger staat op 08:30 (en niet 09:00) omdat de cloud-run zelf
-# enkele tot ~tientallen minuten kost (vooral het vertalen); zo is de krant rond
-# de richttijd 09:00 binnen. De pijplijn kan NIET lokaal draaien: dat (werk)-
+# gemaild. De trigger staat om 08:00 omdat een weekkrant veel artikelen bevat en
+# de cloud-run (vooral het vertalen) een uur of langer kan duren; zo is de krant
+# ruim vóór 12:00 binnen. De pijplijn kan NIET lokaal draaien: dat (werk)-
 # netwerk blokkeert de mailpoorten (IMAP 993 / SMTP 587); alleen HTTPS (443)
 # werkt, genoeg om deze cloud-run aan te sturen. Authenticatie hergebruikt het
 # token uit Git Credential Manager (geen aparte PAT). De taak heeft
-# StartWhenAvailable: staat de pc om 08:30 uit, dan vuurt hij alsnog zodra de
+# StartWhenAvailable: staat de pc om 08:00 uit, dan vuurt hij alsnog zodra de
 # pc weer aan en ingelogd is.
 #
-# ACHTERVANG: de `schedule`-cron hieronder (09:00 CEST). GitHub draait
+# ACHTERVANG: de `schedule`-cron hieronder (vrijdag 08:00 CEST). GitHub draait
 # scheduled-cron op best-effort basis en stelt 'm vaak uren uit (geobserveerd:
-# 18:33 CEST) — dit is dus het vangnet voor dagen dat de pc uit blijft, niet
+# 3,5 uur) — dit is dus het vangnet voor een vrijdag dat de pc uit blijft, niet
 # de stipte route.
 #
 # GEEN DUBBELE VERZENDING: de dagmarkering in de Actions-cache (zie hieronder)
 # zorgt dat alleen de EERSTE geslaagde run van de dag verstuurt. Op een normale
-# dag verstuurt de 08:30-dispatch en zet de markering; de latere `schedule`-cron
-# ziet de cache-hit en slaat alles over. Beide triggers draaien dezelfde
+# vrijdag verstuurt de 08:00-dispatch en zet de markering; de latere `schedule`-
+# cron ziet de cache-hit en slaat alles over. Beide triggers draaien dezelfde
 # workflow, dus de cache geldt voor allebei.
 #
 # MAGAZINE-MODUS (workflow_dispatch met mode=magazine): een handmatige,
@@ -38,10 +39,10 @@ name: De Dagkrant - Nieuwsbundel
 
 'on':
   schedule:
-    # ACHTERVANG (09:00 CEST zomertijd; GitHub stelt dit vaak uren uit). De
-    # stipte 08:30-trigger komt van de lokale Taakplanner via workflow_dispatch.
-    # Beheer deze regel via de Planning-kaart in dashboard.html.
-    - cron: '0 7 * * 0,1,2,3,4,5,6'
+    # ACHTERVANG: vrijdag 08:00 CEST (= 06:00 UTC; in de winter 07:00 CET; GitHub
+    # stelt dit vaak uren uit). De stipte trigger komt van de lokale Taakplanner
+    # via workflow_dispatch. Beheer deze regel via de Planning-kaart in dashboard.html.
+    - cron: '0 6 * * 5'
   # Primaire trigger: lokale Taakplanner, dashboard en handmatige GitHub-run.
   # Apart gehouden van inline commentaar zodat GitHub hem eenduidig registreert.
   workflow_dispatch:
@@ -95,12 +96,15 @@ jobs:
           key: dagkrant-sent-${{ steps.date.outputs.today }}
 
       # Verzonden-administratie: message-id's van mails die al in een eerdere
-      # editie zaten. Nodig omdat het terugkijkvenster 72 uur is (laat-gelabelde
-      # mails komen alsnog mee) — zonder deze administratie zou elke mail drie
-      # dagen achter elkaar in de krant staan. De key is per run uniek zodat de
-      # save-stap altijd een verse snapshot wegschrijft; restore-keys pakt de
-      # meest recente. Magazine-runs gebruiken dit niet (main.py negeert het).
-      - name: Herstel verzonden-administratie (72u-venster)
+      # editie zaten. Nodig omdat het terugkijkvenster 8 dagen is (laat-gelabelde
+      # mails komen alsnog mee) — zonder deze administratie zou een mail uit de
+      # overlap twee edities achter elkaar in de krant staan. De key is per run
+      # uniek zodat de save-stap altijd een verse snapshot wegschrijft;
+      # restore-keys pakt de meest recente. Magazine-runs gebruiken dit niet.
+      # LET OP: GitHub verwijdert cache-items die 7 dagen niet gebruikt zijn; bij
+      # een weekritme is dat krap. Gaat de cache toch verloren, dan komt hooguit
+      # een dag uit de vorige editie dubbel (het venster overlapt 1 dag).
+      - name: Herstel verzonden-administratie (8-dagenvenster)
         if: steps.marker.outputs.cache-hit != 'true' && github.event.inputs.mode != 'magazine'
         uses: actions/cache/restore@v4
         with:
@@ -138,7 +142,7 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit != 'true' && (steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine')
         run: playwright install chromium
 
-      - name: Run De Dagkrant
+      - name: Run De Weekkrant
         if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}

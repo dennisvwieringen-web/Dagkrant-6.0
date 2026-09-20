@@ -1,11 +1,9 @@
 <div class="cover-page">
     <style>
+        /* Blokindeling (geen flex, geen max-height): een weekkrant heeft een
+           inhoudsopgave die over meerdere pagina's mag doorlopen. */
         .cover-page {
-            max-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
-            align-items: center;
+            display: block;
             text-align: center;
             font-family: Georgia, 'Times New Roman', serif;
             color: #1a1a1a;
@@ -62,7 +60,6 @@
             width: 100%;
             text-align: left;
             margin-top: 4px;
-            flex: 1;
         }
 
         .toc-title {
@@ -179,8 +176,8 @@
     </style>
 
     <div class="cover-masthead">
-        <h1 class="cover-title">{{ masthead_title or "De Dagkrant" }}</h1>
-        <p class="cover-subtitle">{{ masthead_subtitle or "Jouw persoonlijke nieuwsbundel, dagelijks samengesteld" }}</p>
+        <h1 class="cover-title">{{ masthead_title or "De Weekkrant" }}</h1>
+        <p class="cover-subtitle">{{ masthead_subtitle or "Jouw persoonlijke nieuwsbundel, elke week samengesteld voor het weekend" }}</p>
     </div>
 
     {% if translation_warning %}
@@ -219,6 +216,6 @@
     </div>
 
     <div class="cover-footer">
-        De Dagkrant &middot; {{ date }}
+        {{ masthead_title or "De Weekkrant" }} &middot; {{ date }}
     </div>
 </div>

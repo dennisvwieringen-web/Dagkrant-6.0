@@ -1,5 +1,5 @@
 """
-main.py - Orchestratie van De Dagkrant.
+main.py - Orchestratie van De Weekkrant (voorheen De Dagkrant).
 
 Dit is het hoofdscript dat alle modules aanstuurt:
 1. Nieuwsbrieven ophalen uit Gmail
@@ -7,9 +7,10 @@ Dit is het hoofdscript dat alle modules aanstuurt:
 3. PDF genereren met voorblad en inhoudsopgave
 4. PDF e-mailen naar het werkadres + Kindle
 
-Schema: ma/wo/do/vr, richttijd krant klaar om 15:00 CEST (lokale Taakplanner
-triggert de cloud-run om 14:30). Elke run → 72 uur terugkijken; de
-verzonden-administratie (Actions-cache) voorkomt duplicaten tussen edities.
+Schema: elke vrijdag; lokale Taakplanner triggert de cloud-run om 08:00 zodat
+de krant ruim voor 12:00 klaar is om te printen en in het weekend te lezen.
+Elke run → 8 dagen terugkijken; de verzonden-administratie (Actions-cache)
+voorkomt duplicaten tussen edities.
 """
 
 import hashlib
@@ -71,15 +72,16 @@ def _get_truly_visible_text(html: str) -> str:
     text = text.replace("\xa0", "").strip()
     return text
 
-# Terugkijkvenster: 72 uur (i.p.v. 24) zodat handmatig gelabelde mails die pas
-# een dag of twee na ontvangst hun label krijgen alsnog worden meegenomen. De
-# verzonden-administratie (zie _load_seen/_save_seen) voorkomt dat een mail
-# die al in een eerdere editie zat opnieuw verstuurd wordt.
-_HOURS_BACK = 72
+# Terugkijkvenster: 8 dagen. De krant verschijnt wekelijks (vrijdag), dus 7 dagen
+# dekt precies één editie; de extra dag vangt handmatig gelabelde mails die pas
+# na de vorige editie hun label kregen. De verzonden-administratie (zie
+# _load_seen/_save_seen) voorkomt dat een mail die al in de vorige editie zat
+# opnieuw verstuurd wordt.
+_HOURS_BACK = 192
 
 
 def _calculate_hours_back() -> int:
-    """Retourneer het aantal uur terugkijken (72; dedup via verzonden-administratie)."""
+    """Retourneer het aantal uur terugkijken (8 dagen; dedup via verzonden-administratie)."""
     logger.info(f"{_HOURS_BACK} uur terugkijken")
     return _HOURS_BACK
 
@@ -95,8 +97,8 @@ def _calculate_hours_back() -> int:
 # In GitHub Actions leeft dit in de Actions-cache (zie dagkrant.yml, key
 # dagkrant-seen-*); lokaal in logs/ (gitignored). Alleen de dagkrant gebruikt
 # dit — een magazine bundelt bewust een vaste periode en raakt het niet aan.
-_SEEN_RETENTION_DAYS = 8  # ruim boven het 72-uursvenster
-_CONTENT_RETENTION_DAYS = 8  # zelfde horizon als de message-id-administratie
+_SEEN_RETENTION_DAYS = 14  # ruim boven het 8-dagenvenster (twee edities)
+_CONTENT_RETENTION_DAYS = 14  # zelfde horizon als de message-id-administratie
 
 # Inhoud-fingerprint: hashes van opeenvolgende woordgroepjes ("shingles").
 # k=8 is bewust specifiek — een toevallige overlap van 8 exact dezelfde
@@ -296,7 +298,7 @@ def main():
     if is_magazine:
         logger.info("DE DAGKRANT - Magazine")
     else:
-        logger.info("DE DAGKRANT - Dagelijkse nieuwsbundel")
+        logger.info("DE WEEKKRANT - Wekelijkse nieuwsbundel")
     logger.info(f"Datum: {datetime.now(timezone.utc).strftime('%d %B %Y %H:%M UTC')}")
     logger.info("=" * 60)
 
@@ -321,38 +323,23 @@ def main():
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
 
     # --- Verzonden-administratie: filter wat al in een eerdere editie zat ---
-    # Het 72-uursvenster geeft laat-gelabelde mails alsnog een kans; deze
-    # administratie voorkomt dat de rest drie dagen achter elkaar meekomt.
+    # Het 8-dagenvenster overlapt met de vorige editie; deze administratie
+    # voorkomt dat mails die daar al in zaten opnieuw meekomen.
     seen: dict | None = None
     seen_path = _seen_ids_path()
-    first_seen_run = False
     if not is_magazine:
         seen = _load_seen(seen_path)
-        first_seen_run = seen is None
-        if first_seen_run:
-            # Overgang van 24u → 72u: mails ouder dan 24 uur zaten (mits op tijd
-            # gelabeld) al in eerdere edities. Markeer ze als gedekt zonder te
-            # versturen, anders krijgt de eerste run een golf aan duplicaten.
-            logger.info("Geen verzonden-administratie gevonden — eerste run met 72-uursvenster; "
-                        "mails ouder dan 24 uur worden als al-gedekt gemarkeerd.")
+        if seen is None:
+            # Geen administratie (eerste run of verlopen cache): alles binnen het
+            # venster telt mee. Hooguit komt een dag uit de vorige editie dubbel.
+            logger.info("Geen verzonden-administratie gevonden — start met een lege lijst.")
             seen = {"message_ids": {}, "content": []}
-        now_utc = datetime.now(timezone.utc)
-        recent_cutoff = now_utc - timedelta(hours=24)
         kept = []
         for nl in newsletters:
             mid = nl.get("message_id", "")
             if mid and mid in seen["message_ids"]:
                 logger.info(f"  ⏭ Al in eerdere editie: '{nl['subject'][:60]}'")
                 continue
-            if first_seen_run:
-                try:
-                    nl_date = datetime.fromisoformat(nl["date"])
-                except (KeyError, ValueError):
-                    nl_date = now_utc
-                if nl_date < recent_cutoff:
-                    if mid:
-                        seen["message_ids"][mid] = now_utc.isoformat()
-                    continue
             kept.append(nl)
         if len(kept) != len(newsletters):
             logger.info(f"{len(newsletters) - len(kept)} nieuwsbrief(ven) overgeslagen "
@@ -363,11 +350,9 @@ def main():
     # voor een themamagazine over een vast datumbereik.
     if not is_magazine:
         logger.info(f"\n🔗 Stap 1b: Handmatige artikelen ophalen (label: Dagkrant/Lezen)...")
-        # Eerste run zonder administratie: 24u (oud gedrag), anders zouden al
-        # eerder geplaatste webartikelen van de afgelopen 3 dagen dubbel komen.
         article_urls = fetch_article_urls(
             gmail_user, gmail_password,
-            hours_back=24 if first_seen_run else hours_back,
+            hours_back=hours_back,
         )
         for url in article_urls:
             if seen is not None and url in seen["message_ids"]:
@@ -395,13 +380,14 @@ def main():
     # of contentchecks afvalt — telt als gedekt: elke mail krijgt precies één kans.
     edition_ids = [nl["message_id"] for nl in newsletters if nl.get("message_id")] if not is_magazine else []
 
-    # Dedupliceer per afzender: maximaal 2 artikelen per afzender.
+    # Dedupliceer per afzender: maximaal MAX_PER_SENDER artikelen per afzender
+    # (een week is lang genoeg voor een dagelijkse afzender om de krant te vullen).
     # In magazine-modus is juist de bedoeling om alles van de gekozen periode/
     # afzender te bundelen, dus geen limiet.
     if is_magazine:
         filtered_by_sender = newsletters
     else:
-        MAX_PER_SENDER = 3
+        MAX_PER_SENDER = 5
         sender_counts: dict[str, int] = {}
         filtered_by_sender = []
         for nl in newsletters:
@@ -691,7 +677,7 @@ def main():
         pdf_path = f.name
 
     try:
-        render_pdf(full_html, pdf_path)
+        render_pdf(full_html, pdf_path, footer_label=display_title if is_magazine else "De Weekkrant")
         file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
         logger.info(f"PDF grootte: {file_size_mb:.1f} MB")
 
@@ -743,7 +729,7 @@ def main():
 
         # Editie is verstuurd — registreer alle meegewogen mails én de
         # inhoud-fingerprints van wat daadwerkelijk verstuurd is, zodat het
-        # 72-uursvenster geen exacte of inhoudelijke duplicaten meer geeft.
+        # 8-dagenvenster geen exacte of inhoudelijke duplicaten meer geeft.
         if seen is not None:
             sent_stamp = datetime.now(timezone.utc).isoformat()
             for mid in edition_ids:
@@ -786,7 +772,7 @@ def main():
                 dutch_date = (
                     f"{local_now.day} {_NL_MONTHS_SHORT[local_now.month]} {local_now.year}"
                 )
-                readwise_title = f"De Dagkrant — {dutch_date}"
+                readwise_title = f"De Weekkrant — {dutch_date}"
                 readwise_key = local_now.date().isoformat()
             logger.info(
                 f"📖 Readwise: highlightbaar HTML-document opslaan als '{readwise_title}'..."
@@ -803,7 +789,7 @@ def main():
             logger.warning("⚠️ READWISE_TOKEN ontbreekt — geen levering aan Readwise Reader.")
 
         logger.info("\n" + "=" * 60)
-        logger.info("DE DAGKRANT IS KLAAR!")
+        logger.info("DE WEEKKRANT IS KLAAR!")
         logger.info(f"Verzonden naar: {', '.join(recipients)}")
         logger.info("=" * 60)
 

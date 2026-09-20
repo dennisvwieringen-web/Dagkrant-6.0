@@ -1,10 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Lokale trigger voor De Dagkrant.
+# Lokale trigger voor De Weekkrant (bestandsnaam/repo heten nog "Dagkrant").
 #
-# Wordt aangeroepen door de Windows Taakplanner-taak "Dagkrant-0830"
-# (dagelijks om 08:30; richttijd krant klaar 09:00). Start de GitHub Actions-
-# workflow stipt via de API (`workflow_dispatch`) — de krant wordt vervolgens
-# IN DE CLOUD opgehaald, vertaald, gerenderd en gemaild.
+# Wordt aangeroepen door de Windows Taakplanner-taak "Weekkrant-Vrijdag"
+# (elke vrijdag om 08:00; de krant is ruim voor de print om 12:00 klaar). Start
+# de GitHub Actions-workflow stipt via de API (`workflow_dispatch`) — de krant
+# wordt vervolgens IN DE CLOUD opgehaald, vertaald, gerenderd en gemaild.
 #
 # Waarom niet lokaal draaien? Dit (werk)netwerk blokkeert de mailpoorten
 # (IMAP 993 en SMTP 587), dus de pijplijn kan hier geen Gmail benaderen. Alleen
@@ -33,7 +33,7 @@ function Log($msg) {
     Write-Output $line
 }
 
-Log "=== De Dagkrant trigger gestart ==="
+Log "=== De Weekkrant trigger gestart ==="
 
 try {
     # 1) Token ophalen uit Git Credential Manager (zelfde credential als git push).

@@ -5,11 +5,13 @@ Combineert het voorblad, de inhoudsopgave en alle nieuwsbrieven tot één HTML-d
 en rendert dit naar PDF met Playwright (Chromium).
 """
 
+import html
 import locale
 import logging
 import os
 import tempfile
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from jinja2 import Environment, FileSystemLoader
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -74,9 +76,9 @@ def render_cover_page(
     Args:
         newsletters: Lijst van nieuwsbrief-dicts.
         toc_entries: Lijst van dicts met 'subject', 'sender', 'description'.
-        masthead_title: Optionele titel i.p.v. "De Dagkrant" (bv. voor een magazine).
+        masthead_title: Optionele titel i.p.v. "De Weekkrant" (bv. voor een magazine).
         masthead_subtitle: Optionele ondertitel i.p.v. de standaardtekst.
-        edition_label: Optioneel label i.p.v. "Editie #N" (bv. een datumbereik).
+        edition_label: Optioneel label i.p.v. "Week N" (bv. een datumbereik).
         translation_warning: Optionele waarschuwingstekst die als banner boven op de
             voorpagina verschijnt (bv. wanneer OpenAI uitviel en Engelse artikelen
             onvertaald bleven). Leeg/None = geen banner.
@@ -87,7 +89,9 @@ def render_cover_page(
     env = Environment(loader=FileSystemLoader(_TEMPLATES_DIR))
     template = env.get_template("cover.html")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    # De krant verschijnt wekelijks: het ISO-weeknummer is het editielabel.
+    edition_label = edition_label or f"Week {now.isocalendar().week}"
     return template.render(
         date=_format_dutch_date(now),
         edition_number=_get_edition_number(),
@@ -323,7 +327,7 @@ def _embed_cover_thumbnail(pdf_path: str, screenshot_png: bytes) -> None:
         reader = PdfReader(pdf_path)
         writer = PdfWriter()
         writer.append(reader)
-        writer.add_metadata({"/Title": "De Dagkrant"})
+        writer.add_metadata({"/Title": "De Weekkrant"})
 
         # Image XObject voor de thumbnail
         thumb = DecodedStreamObject()
@@ -347,13 +351,14 @@ def _embed_cover_thumbnail(pdf_path: str, screenshot_png: bytes) -> None:
         logger.warning(f"Kindle-thumbnail niet ingebed: {e}")
 
 
-def render_pdf(html_content: str, output_path: str) -> str:
+def render_pdf(html_content: str, output_path: str, footer_label: str = "De Weekkrant") -> str:
     """
     Render HTML naar PDF met Playwright (Chromium).
 
     Args:
         html_content: Het volledige HTML-document.
         output_path: Pad waar de PDF wordt opgeslagen.
+        footer_label: Tekst in de paginavoet, vóór het paginanummer.
 
     Returns:
         Pad naar het gegenereerde PDF-bestand.
@@ -399,16 +404,27 @@ def render_pdf(html_content: str, output_path: str) -> str:
             # Screenshot van voorblad voor Kindle-bibliotheekthumbnail (A4-breedte viewport)
             cover_screenshot = page.screenshot(clip={"x": 0, "y": 0, "width": 794, "height": 1123})
 
+            # De krant wordt geprint: paginanummers onderaan (in de 15mm-marge).
             page.pdf(
                 path=output_path,
                 format="A4",
                 margin={
                     "top": "15mm",
                     "right": "15mm",
-                    "bottom": "15mm",
+                    "bottom": "18mm",
                     "left": "15mm",
                 },
                 print_background=True,
+                display_header_footer=True,
+                header_template="<span></span>",
+                footer_template=(
+                    '<div style="width:100%; font-size:8px; color:#888; '
+                    "font-family:Georgia,'Times New Roman',serif; text-align:center; "
+                    'letter-spacing:1px;">'
+                    f'{html.escape(footer_label.upper())} &middot; '
+                    '<span class="pageNumber"></span> / '
+                    '<span class="totalPages"></span></div>'
+                ),
             )
             browser.close()
 
@@ -445,15 +461,15 @@ def send_email_with_pdf(
     """Verstuur de PDF als e-mailbijlage.
 
     `subject`, `body` en `filename` zijn optioneel en overschrijven de standaard
-    "Dagkrant — <datum>"-teksten (gebruikt door bv. een magazine-run).
+    "Weekkrant — <datum>"-teksten (gebruikt door bv. een magazine-run).
     """
     import smtplib
     from email.mime.application import MIMEApplication
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
-    now = datetime.now(timezone.utc)
-    subject = subject or f"Dagkrant — {_format_dutch_date(now)}"
+    now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    subject = subject or f"Weekkrant — {_format_dutch_date(now)}"
 
     msg = MIMEMultipart()
     msg["From"] = sender_email
@@ -461,15 +477,16 @@ def send_email_with_pdf(
     msg["Subject"] = subject
 
     body = body or (
-        f"Goedemiddag!\n\n"
-        f"Hierbij de Dagkrant van {_format_dutch_date(now)}.\n"
-        f"Veel leesplezier!\n\n"
+        f"Goedemorgen!\n\n"
+        f"Hierbij de Weekkrant van {_format_dutch_date(now)} (week {now.isocalendar().week}), "
+        f"klaar om te printen.\n"
+        f"Veel leesplezier dit weekend!\n\n"
         f"Met vriendelijke groet,\n"
-        f"De Dagkrant"
+        f"De Weekkrant"
     )
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    filename = filename or f"Dagkrant {_format_dutch_date_short(now)}.pdf"
+    filename = filename or f"Weekkrant {_format_dutch_date_short(now)}.pdf"
     with open(pdf_path, "rb") as f:
         pdf_attachment = MIMEApplication(f.read(), _subtype="pdf")
         pdf_attachment.add_header("Content-Disposition", "attachment", filename=filename)
