@@ -105,7 +105,13 @@ _KILLLIST_EXACT = [
     r"onze\s+missie.*wij\s+streven",
     r"voorbeeldbedrijf\.\s*alle\s+rechten",
     # --- TASK 4: Aanvullende boilerplate & UI kill-list ---
+    # Readwise' knoppenrij (Favorite / Discard / Tag or Share) wordt gericht op
+    # class verwijderd in clean_html(): een tekstpatroon raakte het hele
+    # (korte) citaatblok eromheen.
     r"favorite\s*/\s*discard\s*/\s*tag\s+or\s+share",
+    r"prefer\s+a\s+new\s+look\s+for\s+this\s+email",
+    r"upgrade\s+to\s+the\s+new\s+experience",
+    r"liever\s+een\s+nieuwe\s+uitstraling",
     r"op\s+de\s+blog\s+of\s+reader\s+lezen",
     r"lees\s+verder",
     r"read\s+full\s+story",
@@ -216,6 +222,10 @@ def clean_html(html_content: str) -> str:
     # Stap 5: Verwijder tracking pixels
     _remove_tracking_pixels(soup)
 
+    # Stap 5b: Readwise-knoppenrij ("Favorite / Discard / Tag or Share →")
+    for row in soup.select("table.highlight-action-row"):
+        row.decompose()
+
     # Stap 5b: NRC-specifiek: verwijder drop-cap spans/tables en promo-footer
     _flatten_nrc_drop_caps(soup)
     _remove_nrc_promo_footer(soup)
@@ -231,6 +241,7 @@ def clean_html(html_content: str) -> str:
 
     # Stap 8: Verwijder footer-secties
     _remove_footers(soup)
+    _remove_trailing_footer_text(soup)
 
     # Stap 9: Verwijder lege containers
     _remove_empty_containers(soup)
@@ -851,6 +862,44 @@ def _remove_footers(soup: BeautifulSoup) -> None:
                 parent.decompose()
         except Exception:
             pass
+
+
+# Zinnen die ondubbelzinnig het begin van de mailvoet markeren.
+_FOOTER_START_PATTERN = re.compile(
+    r"\b(u|je|jij)\s+ontvangt\s+dit\s+(bericht|e-?mail)"
+    r"|you\s+(are\s+)?receiv(ed|ing)\s+this\s+(email|message)"
+    r"|no\s+longer\s+interested\s+in\s+(these\s+)?emails",
+    re.IGNORECASE,
+)
+_MAX_TAIL_CHARS = 800
+
+
+def _remove_trailing_footer_text(soup: BeautifulSoup) -> None:
+    """
+    Knip de mailvoet af die als losse tekst in een groot element hangt.
+
+    _remove_footers() werkt per element (< 600 tekens). Sommige mails
+    (WilfredRubens.com) hebben kapotte HTML waarin het hele artikel in één <p>
+    zit, met de voet als losse tekstnodes erachter — dat element is te groot om
+    te verwijderen. Hier zoeken we de eerste voetzin en verwijderen die plus
+    alles wat daarna komt, mits dat samen kort is (dus echt een staart).
+    """
+    for node in soup.find_all(string=_FOOTER_START_PATTERN):
+        if node.parent is None:
+            continue
+        following = [el for el in node.find_all_next() if el.parent is not None]
+        following_strings = [s for s in node.find_all_next(string=True)]
+        tail_text = "".join(s.strip() for s in following_strings)
+        if len(tail_text) > _MAX_TAIL_CHARS:
+            continue
+        for s in following_strings:
+            if s.parent is not None:
+                s.extract()
+        for el in following:
+            if el.parent is not None and el.name not in ("body", "html"):
+                el.decompose()
+        node.extract()
+        return
 
 
 def _remove_empty_containers(soup: BeautifulSoup) -> None:

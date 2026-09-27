@@ -27,7 +27,8 @@ from dotenv import load_dotenv
 
 from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters, fetch_article_urls
-from web_article import fetch_article
+from web_article import expand_teaser, fetch_article
+from readwise_digest import build_readwise_bundle, is_readwise
 from translator import (
     OpenAIUnavailableError,
     detect_language,
@@ -35,7 +36,13 @@ from translator import (
     translate_html,
 )
 from cleaner import clean_html, minimal_clean, deduplicate_title, is_website_template, strip_ai_artifacts
-from renderer import compose_full_html, render_cover_page, render_pdf, send_email_with_pdf
+from renderer import (
+    compose_full_html,
+    find_sparse_breaks,
+    render_cover_page,
+    render_pdf,
+    send_email_with_pdf,
+)
 from readwise import save_html_document
 
 # Logging configuratie
@@ -228,6 +235,16 @@ def _format_dutch_date_only(value: str) -> str:
     return f"{d.day} {_NL_MONTHS_SHORT[d.month]} {d.year}"
 
 
+_OWN_EDITION_RE = re.compile(r"^(fwd?:\s*)?(de\s+)?(dagkrant|weekkrant|magazine)\s*[—–-]", re.IGNORECASE)
+
+
+def _is_own_edition(nl: dict, gmail_user: str) -> bool:
+    """True voor een door deze pijplijn zelf verstuurde editie."""
+    return bool(_OWN_EDITION_RE.match(nl.get("subject", ""))) and (
+        gmail_user.lower() in nl.get("sender", "").lower()
+    )
+
+
 def _slugify(value: str) -> str:
     """Maak een bestandsnaam-veilige slug van een titel."""
     slug = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
@@ -320,6 +337,14 @@ def main():
         logger.info(f"\n📬 Stap 1: Nieuwsbrieven ophalen uit Gmail (laatste {hours_back} uur)...")
         newsletters = fetch_newsletters(gmail_user, gmail_password, hours_back=hours_back)
 
+    # Eigen edities (Dagkrant/Weekkrant/Magazine) belanden via een Gmail-filter
+    # soms onder een nieuwsbrieflabel. Het zijn alleen een groet + PDF-bijlage:
+    # nooit inhoud voor de volgende editie.
+    own = [nl for nl in newsletters if _is_own_edition(nl, gmail_user)]
+    if own:
+        logger.info(f"{len(own)} eigen editie(s) genegeerd (bv. '{own[0]['subject'][:50]}').")
+        newsletters = [nl for nl in newsletters if not _is_own_edition(nl, gmail_user)]
+
     logger.info(f"{len(newsletters)} nieuwsbrief(ven) gevonden.")
 
     # --- Verzonden-administratie: filter wat al in een eerdere editie zat ---
@@ -391,6 +416,10 @@ def main():
         sender_counts: dict[str, int] = {}
         filtered_by_sender = []
         for nl in newsletters:
+            if is_readwise(nl):
+                # Readwise wordt hieronder tot één rubriek gebundeld — geen limiet.
+                filtered_by_sender.append(nl)
+                continue
             sender = nl.get("sender", "").strip()
             count = sender_counts.get(sender, 0)
             if count < MAX_PER_SENDER:
@@ -399,6 +428,14 @@ def main():
             else:
                 logger.info(f"  ⏭ Overgeslagen (max {MAX_PER_SENDER}/afzender): '{nl['subject'][:60]}'")
     newsletters = filtered_by_sender
+
+    # Readwise: alle mails van de week → één rubriek met unieke citaten per boek,
+    # achteraan de krant. Lukt het uitlezen niet, dan blijven het losse artikelen.
+    if not is_magazine:
+        readwise_items = [nl for nl in newsletters if is_readwise(nl)]
+        bundle = build_readwise_bundle(readwise_items) if readwise_items else None
+        if bundle:
+            newsletters = [nl for nl in newsletters if not is_readwise(nl)] + [bundle]
 
     # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
     # Elke nieuwsbrief wordt apart verwerkt. Als er iets misgaat,
@@ -414,19 +451,30 @@ def main():
     openai_down = False
     for i, nl in enumerate(newsletters):
         subject = nl.get("subject", "(Onbekend)")
+        prebuilt = nl.get("prebuilt", False)  # zelf gebouwde, al schone HTML (Readwise-rubriek)
         try:
-            # Stap 2a: Controleer op generieke website-template (vóór cleaning)
-            if is_website_template(nl["html_content"]):
-                logger.warning(f"  ⚠️ '{subject}' lijkt een website-template — overgeslagen.")
-                continue
+            if prebuilt:
+                logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - rubriek, geen opschoning nodig")
+            else:
+                # Stap 2a: Controleer op generieke website-template (vóór cleaning)
+                if is_website_template(nl["html_content"]):
+                    logger.warning(f"  ⚠️ '{subject}' lijkt een website-template — overgeslagen.")
+                    continue
+
+                # Teaser-mail ("Lees verder op de blog")? Haal het volledige artikel op.
+                try:
+                    expand_teaser(nl)
+                except Exception as e:
+                    logger.warning(f"    Volledig artikel ophalen mislukt: {e} — teaser blijft.")
 
             # Stap 2b: HTML opschonen
             raw_html = nl["html_content"]
-            original_len = len(raw_html)
-            nl["html_content"] = clean_html(raw_html)
-            cleaned_len = len(nl["html_content"])
-            reduction = ((original_len - cleaned_len) / original_len * 100) if original_len > 0 else 0
-            logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
+            if not prebuilt:
+                original_len = len(raw_html)
+                nl["html_content"] = clean_html(raw_html)
+                cleaned_len = len(nl["html_content"])
+                reduction = ((original_len - cleaned_len) / original_len * 100) if original_len > 0 else 0
+                logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
 
             # Stap 2c: Validatie zichtbare tekst (minimaal 300 tekens)
             # Gebruikt _get_truly_visible_text() die ook display:none en &nbsp;
@@ -455,7 +503,8 @@ def main():
                 continue
 
             # Stap 2d: Dubbele titels verwijderen
-            nl["html_content"] = deduplicate_title(nl["html_content"], subject)
+            if not prebuilt:
+                nl["html_content"] = deduplicate_title(nl["html_content"], subject)
 
             # Stap 3: Vertaling. translate_html() beslist zelf per HTML-blok of
             # het Engels is (zie translator.py) — dit vangt gemengde nieuwsbrieven
@@ -677,7 +726,16 @@ def main():
         pdf_path = f.name
 
     try:
-        render_pdf(full_html, pdf_path, footer_label=display_title if is_magazine else "De Weekkrant")
+        footer_label = display_title if is_magazine else "De Weekkrant"
+        render_pdf(full_html, pdf_path, footer_label=footer_label)
+
+        # Tweede ronde: laat artikelen doorlopen op pagina's die bijna leeg
+        # bleven (alleen de staart van het vorige artikel) — scheelt papier.
+        fill_after = find_sparse_breaks(pdf_path)
+        if fill_after:
+            logger.info(f"  {len(fill_after)} bijna lege pagina('s) gevonden — opnieuw renderen met doorloop.")
+            full_html = compose_full_html(cover_html, newsletters, fill_after=fill_after)
+            render_pdf(full_html, pdf_path, footer_label=footer_label)
         file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
         logger.info(f"PDF grootte: {file_size_mb:.1f} MB")
 

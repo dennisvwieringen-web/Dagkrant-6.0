@@ -9,10 +9,12 @@ import html
 import locale
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from bs4 import BeautifulSoup
 from jinja2 import Environment, FileSystemLoader
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -104,13 +106,27 @@ def render_cover_page(
     )
 
 
-def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
+_SHORT_ARTICLE_CHARS = 2000  # ± een halve A4-pagina tekst
+
+
+def _is_short_article(html_content: str) -> bool:
+    soup = BeautifulSoup(html_content, "html.parser")
+    if len(soup.find_all("img")) > 1:
+        return False  # afbeeldingen maken de lengte onvoorspelbaar
+    return len(soup.get_text(" ", strip=True)) < _SHORT_ARTICLE_CHARS
+
+
+def compose_full_html(
+    cover_html: str, newsletters: list[dict], fill_after: frozenset[int] = frozenset()
+) -> str:
     """
     Combineer voorblad en nieuwsbrieven tot één lang HTML-document met page breaks.
 
     Args:
         cover_html: HTML van het voorblad.
         newsletters: Lijst van nieuwsbrief-dicts met 'html_content' en 'subject'.
+        fill_after: Indexen van artikelen die mogen doorlopen op de vorige,
+            bijna lege pagina (uitkomst van find_sparse_breaks()).
 
     Returns:
         Volledig gecombineerd HTML-document.
@@ -119,8 +135,16 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
 
     for i, nl in enumerate(newsletters):
         anchor_id = f"newsletter-{i + 1}"
+        # Korte artikelen (± halve pagina) lopen door onder het vorige artikel
+        # i.p.v. een eigen, halfleeg vel te krijgen. Het eerste artikel begint
+        # altijd op een nieuwe pagina (anders plakt het aan de voorpagina).
+        classes = "newsletter-section"
+        if i > 0 and _is_short_article(nl["html_content"]):
+            classes += " flow"
+        elif i in fill_after:
+            classes += " fill"
         section = f"""
-        <div class="newsletter-section" id="{anchor_id}" style="page-break-before: always;">
+        <div class="{classes}" id="{anchor_id}">
             <div class="newsletter-header">
                 <span class="article-number">Nr. {i + 1}</span>
                 <h2 class="newsletter-title">{nl.get('display_subject', nl['subject'])}</h2>
@@ -165,6 +189,51 @@ def compose_full_html(cover_html: str, newsletters: list[dict]) -> str:
 
         .newsletter-section {{
             page-break-before: always;
+        }}
+
+        /* Kort artikel: doorlopen onder het vorige, maar niet over een
+           paginagrens heen knippen. */
+        .newsletter-section.flow {{
+            page-break-before: auto;
+            break-inside: avoid;
+            margin-top: 36px;
+            padding-top: 24px;
+            border-top: 1px solid #ccc;
+        }}
+
+        /* Readwise-rubriek: citaten per boek */
+        .rw-book {{
+            font-size: 15px;
+            margin: 22px 0 8px 0;
+            color: #1a365d;
+        }}
+        .rw-author {{
+            font-weight: normal;
+            color: #777;
+        }}
+        .rw-highlight {{
+            margin: 0 0 14px 0;
+            padding: 2px 0 2px 14px;
+            border-left: 2px solid #d6d0c4;
+        }}
+        .rw-highlight p {{
+            margin: 0 0 6px 0;
+        }}
+
+        /* Doorlopen omdat de vorige pagina bijna leeg bleef (tweede renderronde).
+           Geen break-inside: avoid — dit kan een lang artikel zijn. */
+        .newsletter-section.fill {{
+            page-break-before: auto;
+            margin-top: 36px;
+            padding-top: 24px;
+            border-top: 1px solid #ccc;
+        }}
+
+        .source-link {{
+            margin: 0 0 14px 0;
+            font-size: 10px;
+            color: #888;
+            word-break: break-all;
         }}
 
         /* Links: donkere kleur voor print, maar wel zichtbaar als link */
@@ -351,6 +420,49 @@ def _embed_cover_thumbnail(pdf_path: str, screenshot_png: bytes) -> None:
         logger.warning(f"Kindle-thumbnail niet ingebed: {e}")
 
 
+_NEARLY_EMPTY_CHARS = 300  # ± vijf regels tekst
+_SPARSE_PAGE_CHARS = 700  # ± een kwart pagina tekst
+_ARTICLE_MARKER_RE = re.compile(r"N ?R ?\. +((?:\d ?)+)")
+
+
+def find_sparse_breaks(pdf_path: str) -> frozenset[int]:
+    """
+    Zoek artikelen die op een nieuwe pagina beginnen terwijl de pagina ervoor
+    bijna leeg is (alleen de laatste regels van het vorige artikel). Geeft de
+    0-gebaseerde artikelindexen terug die in een tweede renderronde mogen
+    doorlopen. Artikelkoppen herkennen we aan "NR. k" — door de letter-spacing
+    haalt pypdf dat eruit als "N R .  k".
+    """
+    from pypdf import PdfReader
+
+    reader = PdfReader(pdf_path)
+    texts = [p.extract_text() or "" for p in reader.pages]
+    result = set()
+    for i in range(1, len(texts) - 1):  # pagina 0 is de voorpagina
+        lines = [l for l in texts[i].splitlines() if not re.search(r"\d+\s*/\s*\d+\s*$", l)]
+        if len("".join(lines).strip()) >= _SPARSE_PAGE_CHARS:
+            continue
+        if _ARTICLE_MARKER_RE.search(texts[i]):
+            continue  # deze pagina bevat zelf al een artikelbegin
+        m = _ARTICLE_MARKER_RE.search(texts[i + 1])
+        if m:
+            number = int(m.group(1).replace(" ", ""))
+            if number > 1:
+                result.add(number - 1)
+    return frozenset(result)
+
+
+def _page_stats(pdf_path: str) -> tuple[int, int]:
+    """(aantal pagina's, tekens tekst op de laatste pagina excl. paginavoet)."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(pdf_path)
+    text = reader.pages[-1].extract_text() or ""
+    # De paginavoet ("DE WEEKKRANT · 6 / 6") telt niet als inhoud.
+    lines = [l for l in text.splitlines() if not re.search(r"\d+\s*/\s*\d+\s*$", l)]
+    return len(reader.pages), len("".join(lines).strip())
+
+
 def render_pdf(html_content: str, output_path: str, footer_label: str = "De Weekkrant") -> str:
     """
     Render HTML naar PDF met Playwright (Chromium).
@@ -405,8 +517,7 @@ def render_pdf(html_content: str, output_path: str, footer_label: str = "De Week
             cover_screenshot = page.screenshot(clip={"x": 0, "y": 0, "width": 794, "height": 1123})
 
             # De krant wordt geprint: paginanummers onderaan (in de 15mm-marge).
-            page.pdf(
-                path=output_path,
+            pdf_options = dict(
                 format="A4",
                 margin={
                     "top": "15mm",
@@ -426,6 +537,24 @@ def render_pdf(html_content: str, output_path: str, footer_label: str = "De Week
                     '<span class="totalPages"></span></div>'
                 ),
             )
+            page.pdf(path=output_path, **pdf_options)
+
+            # Staan er op de laatste pagina maar een paar regels, dan kost dat een
+            # heel vel papier. Probeer het met iets kleinere opmaak te laten passen;
+            # alleen overnemen als dat echt een pagina scheelt.
+            pages, last_chars = _page_stats(output_path)
+            if pages > 2 and last_chars < _NEARLY_EMPTY_CHARS:
+                for scale in (0.96, 0.92):
+                    candidate = output_path + ".tmp"
+                    page.pdf(path=candidate, scale=scale, **pdf_options)
+                    if _page_stats(candidate)[0] < pages:
+                        os.replace(candidate, output_path)
+                        logger.info(
+                            f"  Bijna lege laatste pagina ({last_chars} tekens) weggewerkt "
+                            f"met schaal {scale}."
+                        )
+                        break
+                    os.unlink(candidate)
             browser.close()
 
         _embed_cover_thumbnail(output_path, cover_screenshot)

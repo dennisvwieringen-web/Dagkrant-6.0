@@ -166,7 +166,99 @@ def translate_html(html_content: str, openai_api_key: str) -> tuple[str, bool]:
         result_parts.append(_translate_chunk(client, chunk_html))
         was_translated = True
 
-    return "".join(result_parts), was_translated
+    # Tweede ronde: losse Engelse alinea's die in een overwegend Nederlands blok
+    # zaten, werden als "Nederlands" doorgelaten (bv. een Engelse zin tussen
+    # Nederlandse Readwise-citaten).
+    result, swept = _translate_residual_english(client, "".join(result_parts))
+    return result, was_translated or swept
+
+
+_LEAF_BLOCK_TAGS = [
+    "p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th",
+    "blockquote", "figcaption", "dt", "dd", "div",
+]
+
+
+def _is_clearly_english(text: str) -> bool:
+    """Strenger dan detect_language(): alleen voor korte, losse alinea's."""
+    words = re.findall(r"\b[a-z]+\b", text.lower())
+    if len(words) < 6:
+        return False
+    en = sum(1 for w in words if w in _ENGLISH_MARKERS)
+    nl = sum(1 for w in words if w in _DUTCH_MARKERS)
+    return en >= 2 and en > nl * 1.5
+
+
+def _translate_residual_english(
+    client: OpenAI, html_content: str, max_batch_chars: int = 6000, max_items: int = 80
+) -> tuple[str, bool]:
+    """
+    Zoek blokken zonder geneste blokken (alinea's, lijstitems, cellen) die nog
+    duidelijk Engels zijn en vertaal hun inhoud in-place, gebundeld per
+    API-aanroep. Faalt een batch, dan blijft die tekst ongewijzigd staan.
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    leaves = [
+        el for el in soup.find_all(_LEAF_BLOCK_TAGS)
+        if not el.find(_LEAF_BLOCK_TAGS) and _is_clearly_english(el.get_text(" ", strip=True))
+    ][:max_items]
+    if not leaves:
+        return html_content, False
+
+    logger.info(f"  Nog {len(leaves)} losse Engelse alinea('s) — navertalen...")
+    batches, current, size = [], [], 0
+    for el in leaves:
+        inner = el.decode_contents()
+        if current and size + len(inner) > max_batch_chars:
+            batches.append(current)
+            current, size = [], 0
+        current.append((el, inner))
+        size += len(inner)
+    if current:
+        batches.append(current)
+
+    changed = False
+    for batch in batches:
+        translated = _translate_items(client, [inner for _, inner in batch])
+        if not translated:
+            continue
+        for (el, _), new_inner in zip(batch, translated):
+            el.clear()
+            el.append(BeautifulSoup(new_inner, "html.parser"))
+        changed = True
+
+    return (str(soup), True) if changed else (html_content, False)
+
+
+def _translate_items(client: OpenAI, items: list[str]) -> list[str] | None:
+    """Vertaal een lijst HTML-fragmenten in één aanroep (JSON in, JSON uit)."""
+    import json
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT + (
+                    "\n\nJe krijgt JSON {\"items\": [...]} met HTML-fragmenten. Geef JSON "
+                    "{\"items\": [...]} terug met exact evenveel fragmenten, in dezelfde "
+                    "volgorde, elk vertaald naar het Nederlands."
+                )},
+                {"role": "user", "content": json.dumps({"items": items}, ensure_ascii=False)},
+            ],
+            temperature=0.3,
+            max_tokens=16000,
+            response_format={"type": "json_object"},
+        )
+        result = json.loads(response.choices[0].message.content or "{}").get("items")
+    except Exception as e:
+        if _is_permanent_error(e):
+            raise OpenAIUnavailableError(str(e)) from e
+        logger.warning(f"  ⚠️ Navertalen mislukt: {e}")
+        return None
+    if not isinstance(result, list) or len(result) != len(items) or not all(isinstance(r, str) for r in result):
+        logger.warning("  ⚠️ Navertalen gaf een onverwacht antwoord — originele tekst behouden.")
+        return None
+    return result
 
 
 def _group_by_language(html_content: str, max_chunk_size: int) -> list[tuple[str, str]]:
