@@ -191,6 +191,8 @@ def expand_teaser(nl: dict) -> bool:
         return False
 
     # Bron bovenaan: onderaan belandde de regel soms in z'n eentje op een nieuwe pagina.
-    nl["html_content"] = f'<p class="source-link">Volledig artikel van {url}</p>{content}'
+    # Op papier is een volledige URL onleesbaar en onklikbaar: toon alleen het domein.
+    domain = urlparse(url).netloc.removeprefix("www.")
+    nl["html_content"] = f'<p class="source-link">Volledig artikel van <a href="{url}">{domain}</a></p>{content}'
     logger.info(f"    📰 Teaser aangevuld met volledig artikel ({teaser_len} → {full_len} tekens).")
     return True

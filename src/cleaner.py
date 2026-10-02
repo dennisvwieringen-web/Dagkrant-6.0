@@ -139,7 +139,30 @@ _KILLLIST_EXACT = [
     r"available\s+on\s+(spotify|apple\s+podcasts?|youtube)",
     # Podcast scrubber / tijdstempel (0:00 1:08:27 — audiospeler-indicator)
     r"^0:00\s+\d+:\d{2}:\d{2}",
+    # --- Weekkrant 2 okt 2026: mailvoet/webknoppen die op papier niets doen ---
+    # AI Report (beehiiv)
+    r"^online\s+lezen$",
+    r"^read\s+online$",
+    r"jouw\s+bedrijf\s+in\s+ai\s+report",
+    r"bereik\s+ruim\s+[\d.]+\s+nieuwsbriefabonnees",
+    r"zit\s+je\s+ergens\s+mee\s+of\s+wil\s+je\s+meer\s+weten",
+    # Cal Newport (ConvertKit)
+    r"to\s+read\s+or\s+comment\s+on\s+the\s+site",
+    r"if\s+someone\s+forwarded\s+this\s+email\s+to\s+you",
+    r"to\s+learn\s+more\s+about\s+my\s+work",
+    # Google Workspace Updates
+    r"we.?ve\s+recently\s+changed\s+how\s+we\s+send\s+these\s+emails",
+    # WilfredRubens.com: vaste verwijzing onder elk AI-artikel
+    r"^mijn\s+bronnen\s+over\s+\(generatieve\)",
+    r"^deze\s+pagina\s+bevat\s+al\s+mijn\s+bijdragen",
 ]
+
+# Kop waarna de rest van de container alleen nog links naar oudere edities
+# bevat ("Previous Posts:" van Google Workspace). Kop + volgende siblings weg.
+_SECTION_KILL_PATTERN = re.compile(
+    r"^(previous\s+posts|recent\s+posts|eerdere\s+berichten|more\s+from\s+the\s+blog)\s*:?$",
+    re.IGNORECASE,
+)
 
 _KILLLIST_PATTERN = re.compile("|".join(_KILLLIST_EXACT), re.IGNORECASE)
 
@@ -232,6 +255,9 @@ def clean_html(html_content: str) -> str:
 
     # Stap 6: Verwijder kill-list elementen (header-rommel, placeholders, buttons)
     _remove_killlisted_elements(soup)
+
+    # Stap 6a: Verwijder "Previous Posts:"-achtige linklijsten
+    _remove_killed_sections(soup)
 
     # Stap 6b: Verwijder bekende boilerplate-intro's
     _remove_boilerplate_intros(soup)
@@ -491,9 +517,18 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
         except (ValueError, TypeError):
             pass
 
-        if style and re.search(r"(width|height)\s*:\s*[01](px)?", style):
+        # Alleen een écht 0/1px-formaat: "width:1px" of "height:0". Zonder de
+        # ankers matchte dit ook "width:100%" (de "1" van 100) — waardoor bijna
+        # alle afbeeldingen van beehiiv/Mailchimp-nieuwsbrieven (AI Report,
+        # Google Workspace) als tracking pixel werden weggegooid (okt 2026).
+        if style and re.search(r"(?<![\w-])(width|height)\s*:\s*[01](px)?\s*(;|$)", style):
             is_tiny = True
         if style and re.search(r"display\s*:\s*none", style, re.IGNORECASE):
+            is_tiny = True
+
+        # Decoratieve scheidingsbalken (AI Report: "AIR_divider_…png" tussen
+        # elke rubriek) kosten op papier alleen ruimte.
+        if "divider" in img.get("src", "").lower():
             is_tiny = True
 
         if is_tiny:
@@ -712,6 +747,19 @@ def _remove_forwarding_headers(soup: BeautifulSoup) -> None:
                                 logger.info(f"    Forward-header (child) verwijderd: '{child_text[:80]}...'")
                                 child.decompose()
                 break
+
+
+def _remove_killed_sections(soup: BeautifulSoup) -> None:
+    """Verwijder een kop als 'Previous Posts:' plus alles wat er in dezelfde container na komt."""
+    for elem in list(soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "strong", "b"])):
+        if elem.parent is None:
+            continue
+        if not _SECTION_KILL_PATTERN.match(elem.get_text(" ", strip=True)):
+            continue
+        for sib in list(elem.next_siblings):
+            sib.extract()
+        logger.info(f"    Sectie verwijderd vanaf '{elem.get_text(strip=True)[:40]}'")
+        elem.decompose()
 
 
 def _remove_boilerplate_intros(soup: BeautifulSoup) -> None:

@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 _UNKNOWN_AUTHORS = {"", "onbekend", "unknown"}
 
+# Een "citaat" dat alleen uit een vindplaats bestaat ("(Location 1,651)") — staat
+# soms los in een <p> i.p.v. in een <small>, en gaf een leeg citaatblok.
+_LOCATION_ONLY_RE = re.compile(
+    r"^\(?\s*(location|locatie|page|pagina|p\.)\s*[\d.,\s–-]+\)?$", re.IGNORECASE
+)
+
 
 def is_readwise(nl: dict) -> bool:
     """True voor een Readwise-mail (dagelijks, themed of Sunday Favorites)."""
@@ -68,7 +74,7 @@ def _extract_highlights(raw_html: str) -> list[dict]:
             for small in p.find_all("small"):  # "(Location 529)"
                 small.decompose()
             text = p.get_text(" ", strip=True)
-            if text:
+            if text and not _LOCATION_ONLY_RE.match(text):
                 paragraphs.append(text)
         if not paragraphs:
             continue
@@ -126,4 +132,9 @@ def build_readwise_bundle(items: list[dict]) -> dict | None:
         "html_content": "\n".join(parts),
         "plain_content": None,
         "prebuilt": True,  # zelf gebouwde, schone HTML: niet door clean_html()
+        # Vaste kop i.p.v. een AI-titel uit het eerste citaat.
+        "fixed_toc": True,
+        "toc_description": f"{total} citaten uit {len(books)} boek{'en' if len(books) != 1 else ''}.",
+        # Alleen de citaten vertalen; boektitels en auteurs blijven zoals ze zijn.
+        "translate_selector": "blockquote.rw-highlight p",
     }

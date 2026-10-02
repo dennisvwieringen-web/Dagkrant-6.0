@@ -121,6 +121,21 @@
             line-height: 1.25;
         }
 
+        /* Paginanummer rechts naast de titel: de krant wordt geprint, dus
+           de inhoudsopgave moet zeggen waar een artikel begint. */
+        .toc-item-subject {
+            display: flex;
+            justify-content: space-between;
+            gap: 6px;
+        }
+
+        .toc-item-page {
+            flex: none;
+            font-weight: normal;
+            color: #555;
+            white-space: nowrap;
+        }
+
         .toc-item-sender {
             font-size: 9px;
             color: #999;
@@ -187,7 +202,7 @@
     <div class="cover-meta">
         <span>{{ date }}</span>
         <span class="cover-edition">{{ edition_label or ("Editie #" ~ edition_number) }}</span>
-        <span>{{ newsletter_count }} nieuwsbrie{{ 'f' if newsletter_count == 1 else 'ven' }}</span>
+        <span>{{ newsletter_count }} artikel{{ '' if newsletter_count == 1 else 'en' }}{% if source_count and source_count > 1 %} uit {{ source_count }} bronnen{% endif %}</span>
     </div>
 
     <div class="toc-section">
@@ -198,10 +213,15 @@
                 <a href="#newsletter-{{ loop.index }}" class="toc-link">
                     <span class="toc-item-number">{{ loop.index }}</span>
                     <div class="toc-item-content">
-                        <div class="toc-item-subject">{{ entry.short_title }}</div>
+                        <div class="toc-item-subject">
+                            <span>{{ entry.short_title }}</span>
+                            {% if entry.page %}<span class="toc-item-page">p. {{ entry.page }}</span>{% endif %}
+                        </div>
                         <div class="toc-item-sender">
                             {{ entry.sender }}
-                            {% if entry.was_translated %}
+                            {% if entry.was_summarized %}
+                            <span class="toc-item-translated">samengevat</span>
+                            {% elif entry.was_translated %}
                             <span class="toc-item-translated">vertaald</span>
                             {% endif %}
                         </div>

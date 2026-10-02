@@ -34,13 +34,8 @@ _NL_MONTHS = {
 
 
 def _format_dutch_date(dt: datetime) -> str:
-    """Formatteer een datetime naar Nederlandse datum: 'donderdag 05 februari 2026'."""
-    en_date = dt.strftime("%A %d %B %Y")
-    for en, nl in _NL_DAYS.items():
-        en_date = en_date.replace(en, nl)
-    for en, nl in _NL_MONTHS.items():
-        en_date = en_date.replace(en, nl)
-    return en_date
+    """Formatteer een datetime naar Nederlandse datum: 'donderdag 5 februari 2026'."""
+    return f"{_NL_DAYS[dt.strftime('%A')]} {dt.day} {_NL_MONTHS[dt.strftime('%B')]} {dt.year}"
 
 
 def _format_dutch_date_short(dt: datetime) -> str:
@@ -94,10 +89,12 @@ def render_cover_page(
     now = datetime.now(ZoneInfo("Europe/Amsterdam"))
     # De krant verschijnt wekelijks: het ISO-weeknummer is het editielabel.
     edition_label = edition_label or f"Week {now.isocalendar().week}"
+    sources = {nl.get("display_sender", nl.get("sender", "")) for nl in newsletters}
     return template.render(
         date=_format_dutch_date(now),
         edition_number=_get_edition_number(),
         newsletter_count=len(newsletters),
+        source_count=len(sources),
         toc_entries=toc_entries,
         masthead_title=masthead_title,
         masthead_subtitle=masthead_subtitle,
@@ -114,6 +111,21 @@ def _is_short_article(html_content: str) -> bool:
     if len(soup.find_all("img")) > 1:
         return False  # afbeeldingen maken de lengte onvoorspelbaar
     return len(soup.get_text(" ", strip=True)) < _SHORT_ARTICLE_CHARS
+
+
+def _inline_content(html_content: str) -> str:
+    """
+    Haal ingebedde <html>/<head>/<body> uit een artikel. Chromium voegt de
+    attributen van een tweede <body> samen met de body van de héle krant: een
+    nieuwsbrief met `<body style="font-family: …">` zette zo alle artikelen in
+    zijn lettertype (Billy Oppenheimer, okt 2026).
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    for tag in soup.find_all(["head", "title", "meta"]):
+        tag.decompose()
+    for tag in soup.find_all(["html", "body"]):
+        tag.unwrap()
+    return str(soup)
 
 
 def compose_full_html(
@@ -148,10 +160,10 @@ def compose_full_html(
             <div class="newsletter-header">
                 <span class="article-number">Nr. {i + 1}</span>
                 <h2 class="newsletter-title">{nl.get('display_subject', nl['subject'])}</h2>
-                <p class="newsletter-sender">{nl['sender']}</p>
+                <p class="newsletter-sender">{nl.get('display_sender', nl['sender'])}</p>
             </div>
             <div class="newsletter-content">
-                {nl['html_content']}
+                {_inline_content(nl['html_content'])}
             </div>
         </div>
         """
@@ -292,7 +304,7 @@ def compose_full_html(
 
         .newsletter-content img {{
             max-width: 100% !important;
-            max-height: 30vh !important;
+            max-height: 25vh !important;
             height: auto !important;
             width: auto !important;
             object-fit: contain;
@@ -374,6 +386,56 @@ def compose_full_html(
 </html>"""
 
 
+_MAX_IMAGE_PX = 1000  # ruim genoeg voor een afbeelding van ±25% A4-hoogte op 300 dpi-print
+_JPEG_QUALITY = 70
+
+
+def _compress_images(pdf_path: str) -> None:
+    """
+    Verklein grote afbeeldingen in de PDF. Chromium neemt elke afbeelding op in
+    de originele resolutie: met de screenshots van AI Report werd de krant 17 MB
+    (oktober 2026), terwijl ze op papier een kwart pagina beslaan.
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        before = os.path.getsize(pdf_path)
+        writer = PdfWriter(clone_from=PdfReader(pdf_path))
+        changed = 0
+        for page in writer.pages:
+            for img in page.images:
+                pil = img.image
+                if pil is None or max(pil.size) <= _MAX_IMAGE_PX:
+                    continue
+                if pil.mode in ("RGBA", "LA", "P"):
+                    # Transparantie plat op wit: de krant wordt op wit papier gelezen.
+                    from PIL import Image
+                    rgba = pil.convert("RGBA")
+                    flat = Image.new("RGB", rgba.size, (255, 255, 255))
+                    flat.paste(rgba, mask=rgba.split()[3])
+                    pil = flat
+                else:
+                    pil = pil.convert("RGB")
+                pil.thumbnail((_MAX_IMAGE_PX, _MAX_IMAGE_PX))
+                img.replace(pil, quality=_JPEG_QUALITY)
+                changed += 1
+        if not changed:
+            return
+        tmp = pdf_path + ".small"
+        with open(tmp, "wb") as f:
+            writer.write(f)
+        if os.path.getsize(tmp) < before:
+            os.replace(tmp, pdf_path)
+            logger.info(
+                f"  {changed} afbeelding(en) verkleind: {before / 1e6:.1f} → "
+                f"{os.path.getsize(pdf_path) / 1e6:.1f} MB"
+            )
+        else:
+            os.unlink(tmp)
+    except Exception as e:
+        logger.warning(f"Afbeeldingen verkleinen mislukt (PDF blijft ongewijzigd): {e}")
+
+
 def _embed_cover_thumbnail(pdf_path: str, screenshot_png: bytes) -> None:
     """
     Embed een miniatuurafbeelding van het voorblad als /Thumb in de eerste PDF-pagina.
@@ -450,6 +512,23 @@ def find_sparse_breaks(pdf_path: str) -> frozenset[int]:
             if number > 1:
                 result.add(number - 1)
     return frozenset(result)
+
+
+def article_start_pages(pdf_path: str) -> dict[int, int]:
+    """
+    {artikelnummer: 1-gebaseerd paginanummer waarop het begint}, afgelezen aan
+    de "NR. k"-markering in de artikelkop. Voor de paginanummers in de
+    inhoudsopgave (tweede renderronde).
+    """
+    from pypdf import PdfReader
+
+    pages: dict[int, int] = {}
+    for i, page in enumerate(PdfReader(pdf_path).pages):
+        if i == 0:
+            continue  # voorpagina: de inhoudsopgave zelf
+        for m in _ARTICLE_MARKER_RE.finditer(page.extract_text() or ""):
+            pages.setdefault(int(m.group(1).replace(" ", "")), i + 1)
+    return pages
 
 
 def _page_stats(pdf_path: str) -> tuple[int, int]:
@@ -557,6 +636,7 @@ def render_pdf(html_content: str, output_path: str, footer_label: str = "De Week
                     os.unlink(candidate)
             browser.close()
 
+        _compress_images(output_path)
         _embed_cover_thumbnail(output_path, cover_screenshot)
 
         # Valideer het gegenereerde PDF: log een waarschuwing als het

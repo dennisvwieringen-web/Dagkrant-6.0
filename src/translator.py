@@ -6,6 +6,7 @@ met behoud van HTML-structuur en originele schrijfstijl/toon.
 """
 
 import logging
+import os
 import re
 import time
 
@@ -39,6 +40,28 @@ _PERMANENT_ERROR_MARKERS = (
 )
 
 
+# Vertaalmodel. gpt-4o-mini gaf op papier zichtbare fouten ("Intern intern",
+# letterlijk "Programmatic commentaar"); gpt-4.1 vertaalt merkbaar beter en kost
+# bij 2-3 vertaalde stukken per week enkele centen. Overschrijfbaar via env.
+# Bestaat het model (niet meer) op dit account, dan valt de run terug op
+# gpt-4o-mini i.p.v. alles onvertaald te laten.
+_FALLBACK_MODEL = "gpt-4o-mini"
+_translation_model = os.getenv("TRANSLATION_MODEL", "gpt-4.1")
+
+
+def _handle_model_error(exc: Exception) -> bool:
+    """Schakel over op het fallback-model bij 'model bestaat niet'. True = opnieuw proberen."""
+    global _translation_model
+    text = str(exc).lower()
+    if _translation_model != _FALLBACK_MODEL and (
+        "model_not_found" in text or "does not exist" in text
+    ):
+        logger.warning(f"  ⚠️ Vertaalmodel '{_translation_model}' niet beschikbaar — val terug op {_FALLBACK_MODEL}.")
+        _translation_model = _FALLBACK_MODEL
+        return True
+    return False
+
+
 def _is_permanent_error(exc: Exception) -> bool:
     """
     True als deze OpenAI-fout niet vanzelf overgaat (krediet op, key ongeldig).
@@ -68,10 +91,13 @@ _DUTCH_MARKERS = {
 }
 
 _ENGLISH_MARKERS = {
-    # "is" en "in" weggelaten — ook gangbaar Nederlands, dus geen bruikbaar signaal
-    "the", "a", "an", "of", "to", "and", "for",
-    "that", "with", "on", "are", "was", "this", "have", "from", "or",
-    "be", "by", "not", "but", "what", "all", "were", "we", "when",
+    # "is" en "in" weggelaten — ook gangbaar Nederlands, dus geen bruikbaar signaal.
+    # Om dezelfde reden ook "of", "was" en "we": in een Nederlandse alinea telden
+    # die als Engels, waardoor bv. AI Report's "…Sponsor onze nieuwsbrief of
+    # podcast" als Engels blok werd 'vertaald' (weekkrant 2 okt 2026).
+    "the", "a", "an", "to", "and", "for",
+    "that", "with", "on", "are", "this", "have", "from", "or",
+    "be", "by", "not", "but", "what", "all", "were", "when",
     "your", "can", "has", "more", "will", "been", "would", "who",
     # Extra sterke Engelse signaalwoorden
     "their", "they", "which", "its", "our", "you", "at", "as",
@@ -121,7 +147,11 @@ def detect_language(html_content: str) -> str:
         return "en"
 
 
-def translate_html(html_content: str, openai_api_key: str) -> tuple[str, bool]:
+def _text_len(html_fragment: str) -> int:
+    return len(BeautifulSoup(html_fragment, "html.parser").get_text(" ", strip=True))
+
+
+def translate_html(html_content: str, openai_api_key: str) -> tuple[str, float]:
     """
     Vertaal de Engelse delen van HTML-content naar het Nederlands, met behoud
     van HTML-structuur en originele toon.
@@ -139,8 +169,10 @@ def translate_html(html_content: str, openai_api_key: str) -> tuple[str, bool]:
         openai_api_key: OpenAI API key.
 
     Returns:
-        (html, was_translated) — was_translated is True zodra minstens één
-        blok daadwerkelijk naar het Nederlands vertaald is.
+        (html, translated_share) — het aandeel (0..1) van de zichtbare tekst dat
+        vertaald is. > 0 betekent dat de HTML gewijzigd is; main.py toont het
+        label "vertaald" pas bij een substantieel aandeel, zodat een Nederlandse
+        nieuwsbrief met één Engels videobijschrift niet als vertaald te boek staat.
     """
     client = OpenAI(api_key=openai_api_key)
 
@@ -154,9 +186,10 @@ def translate_html(html_content: str, openai_api_key: str) -> tuple[str, bool]:
 
     grouped = _group_by_language(html_content, max_chunk_size)
     if not grouped:
-        return html_content, False
+        return html_content, 0.0
 
-    was_translated = False
+    total_chars = _text_len(html_content) or 1
+    translated_chars = 0
     result_parts = []
     for chunk_html, lang in grouped:
         if lang != "en":
@@ -164,13 +197,26 @@ def translate_html(html_content: str, openai_api_key: str) -> tuple[str, bool]:
             continue
         logger.info(f"  Vertalen blok ({len(chunk_html)} tekens)...")
         result_parts.append(_translate_chunk(client, chunk_html))
-        was_translated = True
+        translated_chars += _text_len(chunk_html)
 
     # Tweede ronde: losse Engelse alinea's die in een overwegend Nederlands blok
     # zaten, werden als "Nederlands" doorgelaten (bv. een Engelse zin tussen
     # Nederlandse Readwise-citaten).
-    result, swept = _translate_residual_english(client, "".join(result_parts))
-    return result, was_translated or swept
+    result, swept_chars = _translate_residual_english(client, "".join(result_parts))
+    translated_chars += swept_chars
+    return result, min(1.0, translated_chars / total_chars)
+
+
+def translate_quotes(html_content: str, openai_api_key: str, selector: str) -> tuple[str, float]:
+    """
+    Vertaal alleen de duidelijk Engelse elementen die `selector` raakt (bv. de
+    citaten van de Readwise-rubriek) en laat al het andere — boektitels,
+    auteursnamen — onaangeroerd. Zelfde returnwaarde als translate_html().
+    """
+    client = OpenAI(api_key=openai_api_key)
+    total_chars = _text_len(html_content) or 1
+    result, chars = _translate_residual_english(client, html_content, selector=selector)
+    return result, min(1.0, chars / total_chars)
 
 
 _LEAF_BLOCK_TAGS = [
@@ -190,20 +236,24 @@ def _is_clearly_english(text: str) -> bool:
 
 
 def _translate_residual_english(
-    client: OpenAI, html_content: str, max_batch_chars: int = 6000, max_items: int = 80
-) -> tuple[str, bool]:
+    client: OpenAI, html_content: str, max_batch_chars: int = 6000, max_items: int = 80,
+    selector: str | None = None,
+) -> tuple[str, int]:
     """
     Zoek blokken zonder geneste blokken (alinea's, lijstitems, cellen) die nog
     duidelijk Engels zijn en vertaal hun inhoud in-place, gebundeld per
     API-aanroep. Faalt een batch, dan blijft die tekst ongewijzigd staan.
+    Met `selector` worden alleen die elementen bekeken. Geeft de HTML en het
+    aantal vertaalde teksttekens terug.
     """
     soup = BeautifulSoup(html_content, "html.parser")
+    candidates = soup.select(selector) if selector else soup.find_all(_LEAF_BLOCK_TAGS)
     leaves = [
-        el for el in soup.find_all(_LEAF_BLOCK_TAGS)
+        el for el in candidates
         if not el.find(_LEAF_BLOCK_TAGS) and _is_clearly_english(el.get_text(" ", strip=True))
     ][:max_items]
     if not leaves:
-        return html_content, False
+        return html_content, 0
 
     logger.info(f"  Nog {len(leaves)} losse Engelse alinea('s) — navertalen...")
     batches, current, size = [], [], 0
@@ -217,17 +267,17 @@ def _translate_residual_english(
     if current:
         batches.append(current)
 
-    changed = False
+    translated_chars = 0
     for batch in batches:
         translated = _translate_items(client, [inner for _, inner in batch])
         if not translated:
             continue
         for (el, _), new_inner in zip(batch, translated):
+            translated_chars += len(el.get_text(" ", strip=True))
             el.clear()
             el.append(BeautifulSoup(new_inner, "html.parser"))
-        changed = True
 
-    return (str(soup), True) if changed else (html_content, False)
+    return (str(soup), translated_chars) if translated_chars else (html_content, 0)
 
 
 def _translate_items(client: OpenAI, items: list[str]) -> list[str] | None:
@@ -236,7 +286,7 @@ def _translate_items(client: OpenAI, items: list[str]) -> list[str] | None:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=_translation_model,
             messages=[
                 {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT + (
                     "\n\nJe krijgt JSON {\"items\": [...]} met HTML-fragmenten. Geef JSON "
@@ -253,6 +303,8 @@ def _translate_items(client: OpenAI, items: list[str]) -> list[str] | None:
     except Exception as e:
         if _is_permanent_error(e):
             raise OpenAIUnavailableError(str(e)) from e
+        if _handle_model_error(e):
+            return _translate_items(client, items)
         logger.warning(f"  ⚠️ Navertalen mislukt: {e}")
         return None
     if not isinstance(result, list) or len(result) != len(items) or not all(isinstance(r, str) for r in result):
@@ -355,7 +407,7 @@ def _translate_chunk(
         try:
             logger.debug(f"  Vertalen chunk van {len(html_chunk)} tekens (poging {attempt})...")
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=_translation_model,
                 messages=[
                     {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT},
                     {"role": "user", "content": html_chunk},
@@ -406,6 +458,8 @@ def _translate_chunk(
         except Exception as e:
             if _is_permanent_error(e):
                 raise OpenAIUnavailableError(str(e)) from e
+            if _handle_model_error(e):
+                continue
 
             logger.warning(
                 f"  ⚠️ Vertaalpoging {attempt}/{max_attempts} mislukt "
@@ -494,6 +548,51 @@ def _split_html(html_content: str, max_size: int) -> list[str]:
 
     logger.debug(f"  HTML gesplitst in {len(chunks)} chunks (max_size={max_size})")
     return chunks
+
+
+_DIGEST_SYSTEM_PROMPT = (
+    "Je vat een nieuwsbrief met productupdates samen voor een Nederlandse weekkrant "
+    "die op papier gelezen wordt.\n"
+    "- Maak per update één blok: <h3>korte Nederlandse kop</h3> gevolgd door één <p> "
+    "van 2-3 zinnen: wat verandert er, voor wie is het nuttig, en wanneer (uitroldatum) "
+    "als dat genoemd wordt.\n"
+    "- Laat weg: lijsten met licenties/edities, links naar helpcentra, beheerdersinstellingen "
+    "zonder inhoud, 'eerdere berichten' en mailvoet.\n"
+    "- Feitelijk en nuchter, geen hype. Verzin niets.\n"
+    "- Geef ALLEEN de HTML terug, zonder uitleg of code-fences."
+)
+
+
+def summarize_digest(html_content: str, openai_api_key: str) -> str | None:
+    """
+    Vat een update-nieuwsbrief (bv. Google Workspace Updates: uitroldata,
+    licentielijsten, helplinks — al snel 7 pagina's) samen tot korte Nederlandse
+    blokken per update. Geeft None bij een fout; dan blijft het volledige stuk staan.
+    """
+    text = BeautifulSoup(html_content, "html.parser").get_text("\n", strip=True)[:40000]
+    client = OpenAI(api_key=openai_api_key)
+    for attempt in (1, 2):
+        try:
+            response = client.chat.completions.create(
+                model=_translation_model,
+                messages=[
+                    {"role": "system", "content": _DIGEST_SYSTEM_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.2,
+                max_tokens=4000,
+            )
+            content = (response.choices[0].message.content or "").strip()
+            content = re.sub(r"^```(?:html)?\s*|\s*```$", "", content)
+            return content if _text_len(content) >= 100 else None
+        except Exception as e:
+            if _is_permanent_error(e):
+                raise OpenAIUnavailableError(str(e)) from e
+            if _handle_model_error(e):
+                continue
+            logger.warning(f"  ⚠️ Samenvatten mislukt: {e}")
+            return None
+    return None
 
 
 def generate_toc_entry(

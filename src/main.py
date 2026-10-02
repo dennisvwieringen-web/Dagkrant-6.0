@@ -33,10 +33,13 @@ from translator import (
     OpenAIUnavailableError,
     detect_language,
     generate_toc_entry,
+    summarize_digest,
     translate_html,
+    translate_quotes,
 )
 from cleaner import clean_html, minimal_clean, deduplicate_title, is_website_template, strip_ai_artifacts
 from renderer import (
+    article_start_pages,
     compose_full_html,
     find_sparse_breaks,
     render_cover_page,
@@ -245,10 +248,102 @@ def _is_own_edition(nl: dict, gmail_user: str) -> bool:
     )
 
 
+# Nieuwsbrieven die als afzendernaam een slogan of blognaam gebruiken: op de
+# cover en boven het artikel staat liever wie het schreef.
+_SENDER_NAMES = {
+    "x, y of einstein?": "Pedro De Bruyckere",
+    "wilfredrubens.com over leren en ict": "Wilfred Rubens",
+    "google workspace updates blog": "Google Workspace",
+}
+
+
+def _display_sender(sender: str) -> str:
+    """'"X, Y of Einstein?" <donotreply@wordpress.com>' → 'Pedro De Bruyckere'."""
+    name = re.sub(r"<[^>]*>", "", sender or "")
+    name = re.sub(r"\s+", " ", name).strip().strip("\"'").strip()
+    return _SENDER_NAMES.get(name.lower(), name or sender)
+
+
+# Update-nieuwsbrieven die vooral uit uitroldata, licentielijsten en helplinks
+# bestaan: die worden samengevat i.p.v. integraal opgenomen (Google Workspace
+# besloeg in de editie van 2 okt 2026 zeven pagina's).
+_DIGEST_SENDERS = ("workspaceupdates",)
+
+# Pas vanaf dit aandeel vertaalde tekst krijgt een artikel het label "vertaald";
+# een Nederlandse nieuwsbrief met één Engels videobijschrift dus niet.
+_TRANSLATED_LABEL_SHARE = 0.2
+
+
+def _is_digest(nl: dict) -> bool:
+    sender = nl.get("sender", "").lower()
+    return any(marker in sender for marker in _DIGEST_SENDERS)
+
+
+def _reading_order(newsletters: list[dict]) -> list[dict]:
+    """
+    Zet artikelen van dezelfde bron bij elkaar, binnen een bron oudste eerst.
+
+    Nieuwste-eerst over de hele krant liet een nieuwsbrief zichzelf
+    tegenspreken: AI Report's donderdagnummer ("dit is aangekondigd") stond 30
+    pagina's vóór de dinsdag-voorbeschouwing ("wat er vanavond waarschijnlijk
+    komt"), en deel 2 van een serie vóór deel 1. Bronnen staan op volgorde van
+    hun nieuwste stuk; rubrieken (Readwise) blijven achteraan.
+    """
+    rubrics = [nl for nl in newsletters if nl.get("prebuilt")]
+    groups: dict[str, list[dict]] = {}
+    for nl in newsletters:
+        if not nl.get("prebuilt"):
+            groups.setdefault(nl.get("display_sender", nl.get("sender", "")), []).append(nl)
+    ordered_groups = sorted(
+        groups.values(), key=lambda g: max(x.get("date", "") for x in g), reverse=True
+    )
+    result = []
+    for group in ordered_groups:
+        result.extend(sorted(group, key=lambda x: x.get("date", "")))
+    return result + rubrics
+
+
 def _slugify(value: str) -> str:
     """Maak een bestandsnaam-veilige slug van een titel."""
     slug = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
     return slug or "Magazine"
+
+
+_MAX_RENDERS = 4
+
+
+def render_edition(make_cover, newsletters: list[dict], toc_entries: list[dict],
+                   pdf_path: str, footer_label: str) -> str:
+    """
+    Render de PDF in rondes tot de opmaak stabiel is, en geef de definitieve HTML terug.
+
+    Elke ronde leert iets uit de vorige PDF: (1) welke artikelen mogen doorlopen
+    op een bijna lege pagina (find_sparse_breaks — scheelt papier), en (2) op
+    welke pagina elk artikel begint, voor de paginanummers in de inhoudsopgave.
+    Doorlopen verschuift de paginanummers, dus herhalen tot niets meer verandert
+    (meestal 2-3 rondes; begrensd op _MAX_RENDERS).
+    """
+    fill_after: frozenset[int] = frozenset()
+    pages: dict[int, int] = {}
+    full_html = ""
+    for round_no in range(1, _MAX_RENDERS + 1):
+        for idx, entry in enumerate(toc_entries, start=1):
+            entry["page"] = pages.get(idx)
+        full_html = compose_full_html(make_cover(), newsletters, fill_after=fill_after)
+        render_pdf(full_html, pdf_path, footer_label=footer_label)
+
+        new_fill = fill_after | find_sparse_breaks(pdf_path)
+        new_pages = article_start_pages(pdf_path)
+        if new_fill == fill_after and new_pages == pages:
+            break
+        if new_fill != fill_after:
+            logger.info(f"  {len(new_fill - fill_after)} bijna lege pagina('s) — opnieuw renderen met doorloop.")
+        else:
+            logger.info(f"  Paginanummers inhoudsopgave bijwerken (ronde {round_no + 1}).")
+        fill_after, pages = new_fill, new_pages
+    else:
+        logger.warning("  Opmaak niet stabiel na de maximale renderrondes — paginanummers kunnen iets afwijken.")
+    return full_html
 
 
 def main():
@@ -437,6 +532,9 @@ def main():
         if bundle:
             newsletters = [nl for nl in newsletters if not is_readwise(nl)] + [bundle]
 
+    for nl in newsletters:
+        nl["display_sender"] = _display_sender(nl.get("sender", ""))
+
     # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
     # Elke nieuwsbrief wordt apart verwerkt. Als er iets misgaat,
     # wordt die ene nieuwsbrief overgeslagen en gaat de rest door.
@@ -518,7 +616,26 @@ def main():
             nl["was_translated"] = False
             logger.info(f"    Taal (document): {lang.upper()}")
 
-            if openai_down:
+            # Update-nieuwsbrief (Google Workspace): samenvatten i.p.v. integraal
+            # vertalen. De samenvatting is al Nederlands. Mislukt het, dan gaat het
+            # volledige stuk gewoon door de vertaling hieronder.
+            summarized = False
+            if _is_digest(nl) and not openai_down:
+                try:
+                    summary = summarize_digest(nl["html_content"], openai_api_key)
+                except OpenAIUnavailableError as e:
+                    openai_down = True
+                    summary = None
+                    logger.warning(f"    ⚠️ OpenAI onbereikbaar ({e}) — '{subject}' niet samengevat.")
+                if summary:
+                    nl["html_content"] = summary
+                    nl["was_summarized"] = True
+                    summarized = True
+                    logger.info(f"    Samengevat ({len(_get_truly_visible_text(summary))} tekens).")
+
+            if summarized:
+                pass
+            elif openai_down:
                 # OpenAI is deze run al uitgevallen — niet opnieuw proberen, de
                 # nieuwsbrief blijft ongewijzigd staan.
                 if lang == "en":
@@ -528,7 +645,14 @@ def main():
             else:
                 pre_translation_html = nl["html_content"]
                 try:
-                    translated, was_translated = translate_html(nl["html_content"], openai_api_key)
+                    if nl.get("translate_selector"):
+                        # Rubriek: alleen de citaten, niet de boektitels.
+                        translated, share = translate_quotes(
+                            nl["html_content"], openai_api_key, nl["translate_selector"]
+                        )
+                    else:
+                        translated, share = translate_html(nl["html_content"], openai_api_key)
+                    was_translated = share > 0
                 except OpenAIUnavailableError as e:
                     # Krediet op / key ongeldig: dit raakt élk artikel, niet alleen
                     # dit ene. Behoud het origineel (niet droppen) en onthoud dat
@@ -551,8 +675,8 @@ def main():
                         # (geobserveerd bij o.a. The New Yorker).
                         if len(_get_truly_visible_text(translated)) >= 100:
                             nl["html_content"] = translated
-                            nl["was_translated"] = True
-                            logger.info(f"    Vertaling voltooid.")
+                            nl["was_translated"] = share >= _TRANSLATED_LABEL_SHARE
+                            logger.info(f"    Vertaling voltooid ({share:.0%} van de tekst).")
                         else:
                             nl["html_content"] = pre_translation_html
                             logger.warning(
@@ -615,6 +739,8 @@ def main():
         logger.error("Geen enkele nieuwsbrief kon worden verwerkt. Gestopt.")
         return
 
+    newsletters = _reading_order(newsletters)
+
     # --- Stap 4: Inhoudsopgave genereren ---
     logger.info("\n📋 Stap 4: Inhoudsopgave genereren...")
     toc_entries = []
@@ -630,7 +756,10 @@ def main():
             except Exception:
                 pass
 
-            if openai_down:
+            if nl.get("fixed_toc"):
+                # Rubriek met een vaste kop (Readwise) — geen AI-titel uit het eerste citaat.
+                toc_data = {"short_title": nl["subject"], "description": nl.get("toc_description", "")}
+            elif openai_down:
                 # OpenAI is deze run al uitgevallen — geen AI-titel/beschrijving
                 # meer proberen, val terug op het onderwerp.
                 toc_data = {"short_title": nl["subject"][:50], "description": ""}
@@ -641,10 +770,11 @@ def main():
                 )
             toc_entries.append({
                 "subject": nl["subject"],
-                "sender": nl["sender"],
+                "sender": nl["display_sender"],
                 "short_title": toc_data["short_title"],
                 "description": toc_data["description"],
                 "was_translated": nl.get("was_translated", False),
+                "was_summarized": nl.get("was_summarized", False),
             })
             # Gebruik de Nederlandse TOC-titel ook als artikelkop in de PDF —
             # zo verschijnt er nooit een Engelse kop boven een vertaald artikel.
@@ -660,20 +790,22 @@ def main():
             )
             toc_entries.append({
                 "subject": nl["subject"],
-                "sender": nl["sender"],
+                "sender": nl["display_sender"],
                 "short_title": nl["subject"][:50],
                 "description": "",
                 "was_translated": nl.get("was_translated", False),
+                "was_summarized": nl.get("was_summarized", False),
             })
             nl["display_subject"] = nl["subject"]
         except Exception as e:
             logger.error(f"  Fout bij TOC entry voor '{nl['subject']}': {e}")
             toc_entries.append({
                 "subject": nl["subject"],
-                "sender": nl["sender"],
+                "sender": nl["display_sender"],
                 "short_title": nl["subject"][:50],
                 "description": "",
                 "was_translated": nl.get("was_translated", False),
+                "was_summarized": nl.get("was_summarized", False),
             })
             nl["display_subject"] = nl["subject"]
 
@@ -709,17 +841,17 @@ def main():
         masthead_title = magazine_title or "Magazine"
         masthead_subtitle = names_label
         period_label = f"{_format_dutch_date_only(magazine_from)} – {_format_dutch_date_only(magazine_to)}"
-        cover_html = render_cover_page(
-            newsletters, toc_entries,
+        cover_kwargs = dict(
             masthead_title=masthead_title, masthead_subtitle=masthead_subtitle,
             edition_label=period_label,
-            translation_warning=cover_warning,
         )
     else:
-        cover_html = render_cover_page(
-            newsletters, toc_entries, translation_warning=cover_warning,
+        cover_kwargs = {}
+
+    def make_cover() -> str:
+        return render_cover_page(
+            newsletters, toc_entries, translation_warning=cover_warning, **cover_kwargs,
         )
-    full_html = compose_full_html(cover_html, newsletters)
 
     # PDF opslaan in een tijdelijk bestand
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
@@ -727,15 +859,7 @@ def main():
 
     try:
         footer_label = display_title if is_magazine else "De Weekkrant"
-        render_pdf(full_html, pdf_path, footer_label=footer_label)
-
-        # Tweede ronde: laat artikelen doorlopen op pagina's die bijna leeg
-        # bleven (alleen de staart van het vorige artikel) — scheelt papier.
-        fill_after = find_sparse_breaks(pdf_path)
-        if fill_after:
-            logger.info(f"  {len(fill_after)} bijna lege pagina('s) gevonden — opnieuw renderen met doorloop.")
-            full_html = compose_full_html(cover_html, newsletters, fill_after=fill_after)
-            render_pdf(full_html, pdf_path, footer_label=footer_label)
+        full_html = render_edition(make_cover, newsletters, toc_entries, pdf_path, footer_label)
         file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
         logger.info(f"PDF grootte: {file_size_mb:.1f} MB")
 
