@@ -182,6 +182,16 @@ Naast de wekelijkse editie kan dezelfde workflow ook een **magazine** genereren:
 - **Opmaak:** artikelen < 2000 tekens lopen door onder het vorige (`.flow`); tweede renderronde `find_sparse_breaks()` laat een artikel doorlopen op een pagina die bijna leeg bleef (`.fill`); bijna lege laatste pagina → herrender met `scale` 0,96/0,92.
 - **Cleaner:** Readwise-knoppenrij verwijderd op class `highlight-action-row` (een tekstpatroon raakte het hele citaatblok); `_remove_trailing_footer_text()` knipt een mailvoet die als losse tekst in één groot element hangt (WilfredRubens.com: hele artikel in één `<p>`).
 
+**Na de eerste volledige weekkrant (2 oktober 2026):**
+- **Afbeeldingen verdwenen (bug):** `_remove_tracking_pixels()` matchte `width:100%` als 1px-pixel (de "1" van 100) — 24 van de 25 AI Report-afbeeldingen en alle Google Workspace-afbeeldingen werden weggegooid; alleen het bijschrift "Bron afbeelding: …" bleef staan. Regex nu verankerd op een echte waarde `0`/`1(px)` gevolgd door `;` of einde.
+- **Leesvolgorde:** `_reading_order()` in `main.py` zet artikelen per bron bij elkaar, binnen een bron **oudste eerst**; bronnen op volgorde van hun nieuwste stuk, rubrieken (Readwise) achteraan. Nieuwste-eerst over de hele krant zette AI Report's donderdagnummer 30 pagina's vóór de dinsdag-voorbeschouwing, en deel 2 van een serie vóór deel 1.
+- **Inhoudsopgave met paginanummers:** `render_edition()` rendert in rondes tot de opmaak stabiel is (doorloop op lege pagina's + startpagina per artikel via `article_start_pages()` op de "NR. k"-markering), max. 4 rondes.
+- **Bronnamen:** `_display_sender()` + `_SENDER_NAMES` ("X, Y of Einstein?" → Pedro De Bruyckere, "WilfredRubens.com over leren en ICT" → Wilfred Rubens). Cover telt "N artikelen uit M bronnen"; datum zonder voorloopnul.
+- **Update-nieuwsbrieven samenvatten:** afzenders in `_DIGEST_SENDERS` (Google Workspace) gaan door `summarize_digest()` i.p.v. integraal vertaald te worden (was 7 pagina's licentielijsten en helplinks). Label "samengevat". Mislukt het, dan volgt de normale vertaling.
+- **Vertaling:** model `gpt-4.1` (env `TRANSLATION_MODEL`; valt bij "model bestaat niet" terug op `gpt-4o-mini`) — 4o-mini gaf zichtbare fouten. `translate_html()` geeft nu het **vertaalde aandeel** (0..1) terug; het label "vertaald" pas vanaf 20%. "of", "was" en "we" zijn geen Engelse markers meer (ook gewoon Nederlands): daardoor werd een Nederlandse sponsorregel van AI Report als Engels "vertaald".
+- **Readwise-rubriek:** vaste kop "Readwise — citaten van de week" (`fixed_toc`), alleen de citaten worden vertaald (`translate_quotes()` met `translate_selector`), boektitels blijven origineel; citaten die alleen "(Location 1,651)" zijn vallen weg.
+- **Extra boilerplate weg:** AI Report "Online lezen"/sponsorblok/"Zit je ergens mee", Cal Newport "To read or comment…"/"P.S. If someone forwarded…", Google "Previous Posts:" (`_remove_killed_sections()`) en "We've recently changed how we send these emails", Wilfred Rubens "Mijn bronnen over (generatieve) AI". Bronregel bij opgehaalde blogposts toont alleen het domein.
+
 ---
 
 ## Key Design Decisions
