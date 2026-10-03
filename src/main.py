@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import tempfile
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,7 @@ from bs4 import BeautifulSoup
 from fetcher import fetch_newsletters, fetch_article_urls
 from web_article import expand_teaser, fetch_article
 from readwise_digest import build_readwise_bundle, is_readwise
+from substack_feed import fetch_feed_articles
 from translator import (
     OpenAIUnavailableError,
     detect_language,
@@ -303,13 +305,20 @@ def _reading_order(newsletters: list[dict]) -> list[dict]:
     return result + rubrics
 
 
+def _normalize_title(title: str) -> str:
+    """Kleine letters, zonder 'Fwd:' en leestekens — voor mail-vs-RSS-vergelijking."""
+    title = re.sub(r"^(fwd?|re):\s*", "", title.strip(), flags=re.IGNORECASE)
+    return re.sub(r"\W+", " ", title).strip().lower()
+
+
 def _slugify(value: str) -> str:
     """Maak een bestandsnaam-veilige slug van een titel."""
     slug = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
     return slug or "Magazine"
 
 
-_MAX_RENDERS = 4
+_MAX_RENDERS = 5
+_FILL_ROUNDS = 2
 
 
 def render_edition(make_cover, newsletters: list[dict], toc_entries: list[dict],
@@ -332,7 +341,11 @@ def render_edition(make_cover, newsletters: list[dict], toc_entries: list[dict],
         full_html = compose_full_html(make_cover(), newsletters, fill_after=fill_after)
         render_pdf(full_html, pdf_path, footer_label=footer_label)
 
-        new_fill = fill_after | find_sparse_breaks(pdf_path)
+        # Doorloop alleen in de eerste rondes bepalen: bij een dikke krant
+        # schept elke doorloop weer een nieuwe bijna lege pagina elders, en
+        # convergeert het nooit (167 pagina's, okt 2026). Daarna alleen nog
+        # de paginanummers laten bijtrekken.
+        new_fill = fill_after | find_sparse_breaks(pdf_path) if round_no <= _FILL_ROUNDS else fill_after
         new_pages = article_start_pages(pdf_path)
         if new_fill == fill_after and new_pages == pages:
             break
@@ -483,6 +496,21 @@ def main():
                 article["message_id"] = url  # URL als sleutel in de administratie
                 newsletters.append(article)
                 logger.info(f"  Toegevoegd: '{article['subject'][:60]}'")
+
+        # Substack-posts via RSS: Substack mailt niet altijd meer (zie
+        # substack_feed.py). Staat dezelfde post ook als mail in deze editie,
+        # dan wint de mail — die bevat bij een betaald abonnement het hele stuk.
+        logger.info("\n📰 Stap 1c: Substack-posts ophalen via RSS...")
+        since = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        mail_subjects = [_normalize_title(nl.get("subject", "")) for nl in newsletters]
+        for post in fetch_feed_articles(since):
+            if seen is not None and post["message_id"] in seen["message_ids"]:
+                continue
+            title = _normalize_title(post["subject"])
+            if any(SequenceMatcher(None, title, s).ratio() > 0.9 for s in mail_subjects if s):
+                logger.info(f"  ⏭ RSS-post zit al als mail in deze editie: '{post['subject'][:60]}'")
+                continue
+            newsletters.append(post)
 
     if not newsletters:
         if is_magazine:

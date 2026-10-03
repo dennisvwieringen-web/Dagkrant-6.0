@@ -192,6 +192,15 @@ Naast de wekelijkse editie kan dezelfde workflow ook een **magazine** genereren:
 - **Readwise-rubriek:** vaste kop "Readwise — citaten van de week" (`fixed_toc`), alleen de citaten worden vertaald (`translate_quotes()` met `translate_selector`), boektitels blijven origineel; citaten die alleen "(Location 1,651)" zijn vallen weg.
 - **Extra boilerplate weg:** AI Report "Online lezen"/sponsorblok/"Zit je ergens mee", Cal Newport "To read or comment…"/"P.S. If someone forwarded…", Google "Previous Posts:" (`_remove_killed_sections()`) en "We've recently changed how we send these emails", Wilfred Rubens "Mijn bronnen over (generatieve) AI". Bronregel bij opgehaalde blogposts toont alleen het domein.
 
+**Substack via RSS (2 oktober 2026):** Substack stopte rond **8–9 augustus 2026** ongemerkt met mailen van vrijwel alle publicaties (niet in spam/prullenbak; alleen recent toegevoegde abonnementen mailden nog). Vermoedelijke oorzaak: Substack stopt met mailen naar lezers die nooit openen — Dennis leest alles via de krant, dus alle mails stonden op ongelezen. Daarom haalt **stap 1c** in `main.py` de posts nu rechtstreeks uit de feeds (`substack_feed.py`, `feedparser`):
+- **Lijst:** `substack_feeds.json` (repo-root) — `name` (= Gmail-labelnaam, wordt de afzender in de krant) + `feed` (`https://<naam>.substack.com/feed`, redirect naar eigen domein werkt). Optioneel `"enabled": false`. Toevoegen = één regel erbij.
+- **Venster & administratie:** zelfde 8 dagen als de mail; de post-URL (zonder query) is de sleutel in de verzonden-administratie, net als bij webartikelen.
+- **Mail wint van RSS:** komt dezelfde post (titel > 90% gelijk) óók als mail binnen, dan valt de RSS-versie weg — de mail bevat bij een betaald abonnement het hele stuk, de feed alleen een voorvertoning.
+- **Niet in magazine-modus** (magazine filtert op Gmail-label).
+- **Omvang — bewuste keuze van Dennis (3 okt 2026): alles opnemen.** De RSS-posts maken de krant ±90 pagina's dikker (proef: 167 p.; echte editie ±150). Opties als "max 1–2 per Substack" of "lange posts samenvatten" zijn voorgelegd en afgewezen — niet zelf invoeren. Alleen de bestaande `MAX_PER_SENDER` (5) geldt. Ook Roland Grootenboer blijft erin, ondanks zijn mail-afmelding van 2 okt.
+- **Renderrondes:** bij zo'n dikke krant convergeerde de doorloop-op-lege-pagina's niet (elke doorloop maakt elders een nieuwe lege pagina). Doorloop wordt daarom alleen in de eerste `_FILL_ROUNDS` (2) rondes bepaald, daarna trekken alleen de paginanummers bij (`_MAX_RENDERS` = 5).
+- Alexander Klöpping heeft geen werkende feed meer (de URL geeft een HTML-pagina) en staat niet in de lijst. AI Report (beehiiv) en Intentioneel Leven zijn van Substack af en komen gewoon per mail.
+
 ---
 
 ## Key Design Decisions

@@ -155,6 +155,11 @@ _KILLLIST_EXACT = [
     # WilfredRubens.com: vaste verwijzing onder elk AI-artikel
     r"^mijn\s+bronnen\s+over\s+\(generatieve\)",
     r"^deze\s+pagina\s+bevat\s+al\s+mijn\s+bijdragen",
+    # Substack-posts via RSS: knoppen onder (voorvertoningen van) posts
+    r"^read\s+more$",
+    r"^subscribe\s+now$",
+    r"^share\s+this\s+post$",
+    r"^leave\s+a\s+comment$",
 ]
 
 # Kop waarna de rest van de container alleen nog links naar oudere edities

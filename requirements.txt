@@ -21,3 +21,6 @@ pypdf==6.7.5
 
 # Afbeeldingsverwerking (Kindle-thumbnail embedding)
 Pillow>=10.0.0
+
+# Substack-posts via RSS (substack_feed.py)
+feedparser==6.0.14
