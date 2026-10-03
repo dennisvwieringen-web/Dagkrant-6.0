@@ -160,7 +160,40 @@ _KILLLIST_EXACT = [
     r"^subscribe\s+now$",
     r"^share\s+this\s+post$",
     r"^leave\s+a\s+comment$",
+    # Lenny's podcastposts: vaste productie-/sponsorregel
+    r"production\s+and\s+marketing\s+by",
+    r"for\s+inquiries\s+about\s+sponsoring",
 ]
+
+# Substack-extra's die op papier niets doen. Knoppen ("Subscribe now",
+# "Abonneer nu", "Krijg 25% korting", "Share") en oproepen onder de post
+# ("Vind je deze nieuwsbrief waardevol? Deel hem…") hebben vaste classes —
+# daarop filteren werkt in elke taal, een tekstpatroon niet.
+_SUBSTACK_EXTRA_SELECTOR = (
+    ".button-wrapper, .subscription-widget-wrap, .subscription-widget-wrap-editor, "
+    ".subscription-widget, .show-subscribe, .cta-caption, button"
+)
+
+# Kop van een linklijst naar eerdere posts (Ian Leslie: "Catch-up service:").
+_CATCHUP_HEADING_RE = re.compile(
+    r"^\s*(catch[\s-]?up\s+service|inhaaldienst|in\s+case\s+you\s+missed\s+it|icymi"
+    r"|recent\s+posts|previously\s+on\s+the\s+\w+)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+# Wervingsalinea's voor een betaald abonnement (Ian Leslie, Molly G).
+_PAID_PROMO_RE = re.compile(
+    r"for\s+paid\s+subscribers\s+only"
+    r"|exclusive(ly)?\s+for\s+paid\s+subscribers"
+    r"|relies\s+entirely\s+on\s+paid\s+subscriptions"
+    r"|rattle\s+bag\s+of\s+goodies"
+    r"|discount\s+on\s+(paid\s+)?annual\s+subscriptions"
+    r"|subscribe\s+to\s+[\w' ]{1,40}\s+to\s+(get|receive)\s+new\s+posts"
+    r"|get\s+\d+%\s+off\s+for\s+\d+\s+year"
+    r"|finding\s+this\s+newsletter\s+valuable,?\s+share\s+it",
+    re.IGNORECASE,
+)
+_MAX_PROMO_CHARS = 1200
 
 # Kop waarna de rest van de container alleen nog links naar oudere edities
 # bevat ("Previous Posts:" van Google Workspace). Kop + volgende siblings weg.
@@ -263,6 +296,7 @@ def clean_html(html_content: str) -> str:
 
     # Stap 6a: Verwijder "Previous Posts:"-achtige linklijsten
     _remove_killed_sections(soup)
+    _remove_substack_extras(soup)
 
     # Stap 6b: Verwijder bekende boilerplate-intro's
     _remove_boilerplate_intros(soup)
@@ -765,6 +799,34 @@ def _remove_killed_sections(soup: BeautifulSoup) -> None:
             sib.extract()
         logger.info(f"    Sectie verwijderd vanaf '{elem.get_text(strip=True)[:40]}'")
         elem.decompose()
+
+
+def _remove_substack_extras(soup: BeautifulSoup) -> None:
+    """Substack-knoppen, inhaaldienst-linklijsten en wervingsalinea's voor betaalde abonnementen."""
+    for el in soup.select(_SUBSTACK_EXTRA_SELECTOR):
+        if el.parent is not None:
+            el.decompose()
+
+    # Inhaaldienst: kop + links naar eerdere posts, samen in één blok.
+    for node in soup.find_all(string=_CATCHUP_HEADING_RE):
+        if node.parent is None:
+            continue
+        block = node.find_parent(["blockquote", "p", "div", "td"])
+        if block is None:
+            continue
+        outer = block.find_parent("blockquote")
+        if outer is not None and len(outer.get_text(strip=True)) <= len(block.get_text(strip=True)) + 20:
+            block = outer
+        logger.info(f"    Inhaaldienst verwijderd: '{block.get_text(' ', strip=True)[:60]}'")
+        block.decompose()
+
+    for el in list(soup.find_all(["p", "div", "blockquote"])):
+        if el.parent is None or el.find(["p", "div"]):
+            continue
+        text = el.get_text(" ", strip=True)
+        if len(text) <= _MAX_PROMO_CHARS and _PAID_PROMO_RE.search(text):
+            logger.info(f"    Abonnementswerving verwijderd: '{text[:60]}'")
+            el.decompose()
 
 
 def _remove_boilerplate_intros(soup: BeautifulSoup) -> None:
