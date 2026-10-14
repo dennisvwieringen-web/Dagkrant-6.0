@@ -16,6 +16,8 @@
 # Alles wordt gelogd naar logs\dagkrant-<datum>.log (laatste 30 bewaard).
 # ─────────────────────────────────────────────────────────────────────────────
 
+param([switch]$Force)   # -Force: ook op een andere dag dan vrijdag starten (handmatig testen)
+
 $ErrorActionPreference = 'Stop'
 
 $Root   = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -34,6 +36,14 @@ function Log($msg) {
 }
 
 Log "=== De Weekkrant trigger gestart ==="
+
+# StartWhenAvailable haalt een gemiste vrijdag-run in zodra de pc weer aan is -
+# ook op woensdag (gezien 14 okt 2026). Dan is de krant al via de cron-achtervang
+# verstuurd en zou dit een tweede editie midden in de week opleveren.
+if (-not $Force -and (Get-Date).DayOfWeek -ne [DayOfWeek]::Friday) {
+    Log "Vandaag is geen vrijdag - gemiste run overgeslagen (gebruik -Force om toch te starten)."
+    exit 0
+}
 
 try {
     # 1) Token ophalen uit Git Credential Manager (zelfde credential als git push).
