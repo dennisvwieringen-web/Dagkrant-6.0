@@ -18,10 +18,16 @@ name: De Dagkrant - Nieuwsbundel
 # StartWhenAvailable: staat de pc om 08:00 uit, dan vuurt hij alsnog zodra de
 # pc weer aan en ingelogd is.
 #
-# ACHTERVANG: de `schedule`-cron hieronder (vrijdag 08:00 CEST). GitHub draait
+# ACHTERVANG: de `schedule`-cron hieronder (vrijdag 03:00 CEST). GitHub draait
 # scheduled-cron op best-effort basis en stelt 'm vaak uren uit (geobserveerd:
-# 3,5 uur) — dit is dus het vangnet voor een vrijdag dat de pc uit blijft, niet
-# de stipte route.
+# 3,5 uur, op 9 okt 2026 zelfs 6,5 uur → pas om 14:29, ná de print). Daarom
+# staat hij vroeg: ook met flinke vertraging is de krant vóór 12:00 binnen.
+# Meestal verstuurt deze run dus al vóór de 08:00-dispatch (die dan overslaat).
+#
+# SUBSTACK-CACHE: Substack weigert de GitHub-servers (HTTP 403 op elke feed).
+# De pc van Dennis haalt de feeds daarom dagelijks op (fetch_substack_cache.ps1,
+# taak "Weekkrant-Substack") en zet ze in substack_cache.json op de branch
+# `substack-cache`. Deze workflow downloadt dat bestand vóór de run.
 #
 # GEEN DUBBELE VERZENDING: de dagmarkering in de Actions-cache (zie hieronder)
 # zorgt dat alleen de EERSTE geslaagde run van de dag verstuurt. Op een normale
@@ -39,10 +45,10 @@ name: De Dagkrant - Nieuwsbundel
 
 'on':
   schedule:
-    # ACHTERVANG: vrijdag 08:00 CEST (= 06:00 UTC; in de winter 07:00 CET; GitHub
-    # stelt dit vaak uren uit). De stipte trigger komt van de lokale Taakplanner
-    # via workflow_dispatch. Beheer deze regel via de Planning-kaart in dashboard.html.
-    - cron: '0 6 * * 5'
+    # ACHTERVANG: vrijdag 03:00 CEST (= 01:00 UTC; in de winter 02:00 CET; GitHub
+    # stelt dit vaak uren uit). Ook de lokale Taakplanner start om 08:00 via
+    # workflow_dispatch. Beheer deze regel via de Planning-kaart in dashboard.html.
+    - cron: '0 1 * * 5'
   # Primaire trigger: lokale Taakplanner, dashboard en handmatige GitHub-run.
   # Apart gehouden van inline commentaar zodat GitHub hem eenduidig registreert.
   workflow_dispatch:
@@ -142,6 +148,15 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit != 'true' && (steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine')
         run: playwright install chromium
 
+      # Substack-feeds zoals de pc ze ophaalde (zie kop). Ontbreekt de branch of
+      # het bestand, dan probeert substack_feed.py het live (en logt de 403).
+      - name: Haal Substack-cache op
+        if: steps.marker.outputs.cache-hit != 'true' && github.event.inputs.mode != 'magazine'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sfL -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github.raw"             "https://api.github.com/repos/${{ github.repository }}/contents/substack_cache.json?ref=substack-cache"             -o substack_cache.json || echo "Geen Substack-cache gevonden."
+
       - name: Run De Weekkrant
         if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
         env:
@@ -159,6 +174,7 @@ jobs:
           MAGAZINE_TO: ${{ github.event.inputs.date_to }}
           MAGAZINE_TITLE: ${{ github.event.inputs.title }}
           SEEN_IDS_FILE: ${{ github.workspace }}/seen_ids.json
+          SUBSTACK_CACHE_FILE: ${{ github.workspace }}/substack_cache.json
         run: cd src && python main.py
 
       # Markeer pas NA een geslaagde verzending. Faalt de run, dan blijft de

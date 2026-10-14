@@ -45,6 +45,11 @@ if (-not $Force -and (Get-Date).DayOfWeek -ne [DayOfWeek]::Friday) {
     exit 0
 }
 
+# Verse Substack-cache voor deze run (de cloud krijgt 403 van Substack). Mislukt
+# dit, dan gebruikt de run de cache van de dagelijkse taak "Weekkrant-Substack".
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'fetch_substack_cache.ps1') | Out-Null
+Log "Substack-cache ververst (exitcode $LASTEXITCODE)."
+
 try {
     # 1) Token ophalen uit Git Credential Manager (zelfde credential als git push).
     #    Let op: `git credential fill` via PowerShell-piping faalt (stdin krijgt

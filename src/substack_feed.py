@@ -11,6 +11,12 @@ De lijst met publicaties staat in substack_feeds.json (repo-root): naam (zoals
 het Gmail-label, wordt de afzender in de krant) + feed-URL. Betaalde posts
 geven in de feed alleen een voorvertoning; komt dezelfde post ook per mail
 binnen, dan wint de mail (zie main.py).
+
+Substack weigert de servers van GitHub Actions (HTTP 403 op élke feed, gezien
+9 okt 2026). De pc van Dennis haalt de feeds daarom dagelijks op
+(fetch_substack_cache.ps1) en zet de ruwe XML in substack_cache.json op de
+branch `substack-cache`; de workflow zet dat bestand klaar en SUBSTACK_CACHE_FILE
+wijst ernaar. Een feed die niet in de cache staat, wordt live geprobeerd.
 """
 
 import html
@@ -27,6 +33,33 @@ logger = logging.getLogger(__name__)
 _FEEDS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "substack_feeds.json")
 # Substack geeft een kale Python-UA soms een 403; een gewone UA niet.
 _USER_AGENT = "Mozilla/5.0 (compatible; Weekkrant RSS reader)"
+_CACHE_STALE_DAYS = 3  # ouder dan dit: waarschuwen (pc stond lang uit)
+
+
+def _load_cache() -> dict[str, str]:
+    """Feed-URL → XML uit de pc-cache; leeg als er geen (bruikbare) cache is."""
+    path = os.environ.get("SUBSTACK_CACHE_FILE")
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        feeds = data.get("feeds") or {}
+        fetched = data.get("fetched_at", "")
+        logger.info(f"  Substack-cache van de pc: {len(feeds)} feed(s), opgehaald {fetched}")
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(fetched)
+            if age.days >= _CACHE_STALE_DAYS:
+                logger.warning(
+                    f"  ⚠️ Substack-cache is {age.days} dagen oud — stond de pc uit? "
+                    f"Posts van daarna ontbreken (komen volgende week alsnog mee)."
+                )
+        except ValueError:
+            pass
+        return {url: xml for url, xml in feeds.items() if xml}
+    except Exception as e:
+        logger.warning(f"  Substack-cache onleesbaar ({e}) — feeds worden live geprobeerd.")
+        return {}
 
 
 def load_feeds(path: str = _FEEDS_FILE) -> list[dict]:
@@ -69,11 +102,13 @@ def fetch_feed_articles(since: datetime, feeds: list[dict] | None = None) -> lis
     (zelfde vorm als fetcher.py). Een feed die faalt wordt overgeslagen.
     """
     feeds = load_feeds() if feeds is None else feeds
+    cache = _load_cache()
     articles = []
     for feed in feeds:
         name = feed.get("name") or feed["feed"]
         try:
-            parsed = feedparser.parse(feed["feed"], agent=_USER_AGENT)
+            source_doc = cache.get(feed["feed"]) or feed["feed"]
+            parsed = feedparser.parse(source_doc, agent=_USER_AGENT)
         except Exception as e:
             logger.warning(f"  RSS {name}: ophalen mislukt ({e})")
             continue
