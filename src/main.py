@@ -776,11 +776,14 @@ def main():
         try:
             # Geef een content-snippet mee voor betere beschrijvingen
             snippet = ""
+            headings: list[str] = []
             try:
-                snippet = (
-                    BeautifulSoup(nl["html_content"], "html.parser")
-                    .get_text(separator=" ", strip=True)[:500]
-                )
+                soup = BeautifulSoup(nl["html_content"], "html.parser")
+                snippet = soup.get_text(separator=" ", strip=True)[:500]
+                headings = [
+                    t for h in soup.find_all(["h1", "h2", "h3"])
+                    if 3 <= len(t := h.get_text(" ", strip=True)) <= 120
+                ]
             except Exception:
                 pass
 
@@ -795,6 +798,7 @@ def main():
                 toc_data = generate_toc_entry(
                     nl["subject"], nl["sender"], openai_api_key,
                     content_snippet=snippet,
+                    section_headings=headings if len(headings) >= 3 else None,
                 )
             toc_entries.append({
                 "subject": nl["subject"],

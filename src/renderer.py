@@ -128,6 +128,66 @@ def _inline_content(html_content: str) -> str:
     return str(soup)
 
 
+# Een element met méér tekst dan dit is een wrapper (hele nieuwsbrief of groot
+# blok), geen kader. Kaders (prompts, citaten) blijven gekleurd; wrappers niet.
+_WRAPPER_BG_CHARS = 1200
+_BG_STYLE_RE = re.compile(r"background(-color|-image)?\s*:[^;]*;?", re.IGNORECASE)
+_HEX_RE = re.compile(r"#([0-9a-f]{3}|[0-9a-f]{6})\b", re.IGNORECASE)
+
+
+def _is_dark_color(value: str) -> bool:
+    """True als de (eerste hex-)kleur donker is. Onbekend → niet donker."""
+    m = _HEX_RE.search(value or "")
+    if not m:
+        return False
+    h = m.group(1)
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+
+
+def _neutralize_wrapper_backgrounds(html_content: str) -> str:
+    """
+    Haal lichte achtergrondkleuren van grote wrappers weg. AI Report zet de
+    hele mail op een roze vlak — in week 41 waren dat ~40 roze A4'tjes inkt.
+    Donkere wrappers blijven staan: daar hoort lichte tekst bij die op wit
+    onleesbaar zou worden.
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    def bg_of(el) -> str:
+        style = el.get("style", "")
+        m = _BG_STYLE_RE.search(style) if style else None
+        return (el.get("bgcolor") or el.get("background") or (m.group(0) if m else "")).strip()
+
+    def color_key(value: str) -> str:
+        m = _HEX_RE.search(value)
+        return m.group(0).lower() if m else value.lower()
+
+    def strip_bg(el) -> None:
+        for attr in ("bgcolor", "background"):
+            if el.has_attr(attr):
+                del el[attr]
+        if el.get("style"):
+            el["style"] = _BG_STYLE_RE.sub("", el["style"])
+
+    colored = [(el, bg_of(el)) for el in soup.find_all(True)]
+    colored = [(el, bg) for el, bg in colored if bg]
+    wrapper_colors = set()
+    for el, bg in colored:
+        if len(el.get_text(" ", strip=True)) > _WRAPPER_BG_CHARS and not _is_dark_color(bg):
+            wrapper_colors.add(color_key(bg))
+    if not wrapper_colors:
+        return html_content
+    # Ook kleinere blokken in dezelfde kleur (rij-voor-rij gekleurde tabellen),
+    # anders blijft er een roze lappendeken over.
+    for el, bg in colored:
+        if color_key(bg) in wrapper_colors:
+            strip_bg(el)
+    return str(soup)
+
+
 def compose_full_html(
     cover_html: str, newsletters: list[dict], fill_after: frozenset[int] = frozenset()
 ) -> str:
@@ -163,7 +223,7 @@ def compose_full_html(
                 <p class="newsletter-sender">{nl.get('display_sender', nl['sender'])}</p>
             </div>
             <div class="newsletter-content">
-                {_inline_content(nl['html_content'])}
+                {_neutralize_wrapper_backgrounds(_inline_content(nl['html_content']))}
             </div>
         </div>
         """
@@ -291,6 +351,13 @@ def compose_full_html(
 
         .newsletter-content {{
             padding: 10px 0;
+        }}
+
+        /* Eén lettertype voor de hele krant: sommige nieuwsbrieven (bv. Billy
+           Oppenheimer) zetten inline een schreefloze letter, wat in print als
+           een losse folder oogt. Code houdt zijn monospace. */
+        .newsletter-content *:not(pre):not(code):not(kbd):not(samp) {{
+            font-family: Georgia, 'Times New Roman', serif !important;
         }}
 
         /* --- Fix 1: Anti-gatenkaas CSS --- */

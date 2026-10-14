@@ -112,7 +112,7 @@ _KILLLIST_EXACT = [
     r"prefer\s+a\s+new\s+look\s+for\s+this\s+email",
     r"upgrade\s+to\s+the\s+new\s+experience",
     r"liever\s+een\s+nieuwe\s+uitstraling",
-    r"op\s+de\s+blog\s+of\s+reader\s+lezen",
+    r"op\s+(de|die)\s+blog\s+of\s+reader\s+lezen",
     r"lees\s+verder",
     r"read\s+full\s+story",
     r"^reactie$",
@@ -163,6 +163,11 @@ _KILLLIST_EXACT = [
     # Lenny's podcastposts: vaste productie-/sponsorregel
     r"production\s+and\s+marketing\s+by",
     r"for\s+inquiries\s+about\s+sponsoring",
+    # Weekkrant 41 (okt 2026): resten die in de print bleven staan
+    r"^dit\s+artikel\s+liken$",                                    # Ernst-Jan Pfauth like-knop
+    r"vond\s+je\s+(het|dit)\s+een\s+waardevolle\s+editie",          # Pfauth slotoproep
+    r"^kopieer\s+de\s+prompt\s+en\s+pas\s+(het|hem|deze)\s+aan\.?$",  # AI Report knop
+    r"^klik\s+hier\s+om\s+naar\s+zoom\s+te\s+gaan\.?$",             # AI Report livestream-link
 ]
 
 # Substack-extra's die op papier niets doen. Knoppen ("Subscribe now",
@@ -589,7 +594,7 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
         if elem.parent is None:
             continue
         try:
-            text = elem.get_text(strip=True)
+            text = elem.get_text(" ", strip=True)
         except Exception:
             continue
 
@@ -603,11 +608,11 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
         # dezelfde div staat als boilerplate (bijv. Readwise quote + "Favorite / Share →").
         if len(text) <= 500 and _KILLLIST_PATTERN.search(text):
             nonkill_len = sum(
-                len(c.get_text(strip=True))
+                len(c.get_text(" ", strip=True))
                 for c in elem.children
                 if hasattr(c, 'get_text')
-                and c.get_text(strip=True)
-                and not _KILLLIST_PATTERN.search(c.get_text(strip=True))
+                and c.get_text(" ", strip=True)
+                and not _KILLLIST_PATTERN.search(c.get_text(" ", strip=True))
             )
             if nonkill_len > 80:
                 # Container heeft waardevolle inhoud — verwijder alleen kill-kinderen
@@ -615,7 +620,7 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
                     if child.parent is None:
                         continue
                     if hasattr(child, 'get_text'):
-                        child_text = child.get_text(strip=True)
+                        child_text = child.get_text(" ", strip=True)
                         if child_text and _KILLLIST_PATTERN.search(child_text) and len(child_text) <= 500:
                             child.decompose()
                 continue
@@ -638,7 +643,7 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
                     if child.parent is None:
                         continue
                     if hasattr(child, 'get_text'):
-                        child_text = child.get_text(strip=True)
+                        child_text = child.get_text(" ", strip=True)
                         if child_text and _KILLLIST_PATTERN.search(child_text) and len(child_text) <= 500:
                             child.decompose()
                             break
@@ -649,7 +654,7 @@ def _remove_killlisted_elements(soup: BeautifulSoup) -> None:
                     if child.parent is None:
                         continue
                     if hasattr(child, 'get_text'):
-                        child_text = child.get_text(strip=True)
+                        child_text = child.get_text(" ", strip=True)
                         if child_text and _KILLLIST_PATTERN.search(child_text) and len(child_text) <= 500:
                             child.decompose()
                             break

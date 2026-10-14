@@ -203,6 +203,12 @@ Naast de wekelijkse editie kan dezelfde workflow ook een **magazine** genereren:
 - **Renderrondes:** bij zo'n dikke krant convergeerde de doorloop-op-lege-pagina's niet (elke doorloop maakt elders een nieuwe lege pagina). Doorloop wordt daarom alleen in de eerste `_FILL_ROUNDS` (2) rondes bepaald, daarna trekken alleen de paginanummers bij (`_MAX_RENDERS` = 5).
 - Alexander Klöpping heeft geen werkende feed meer (de URL geeft een HTML-pagina) en staat niet in de lijst. AI Report (beehiiv) en Intentioneel Leven zijn van Substack af en komen gewoon per mail.
 
+**Weekkrant-verbeteringen (14 oktober 2026, n.a.v. week 41):**
+- **Kill-list matcht op tekst mét spaties:** `_remove_killlisted_elements()` gebruikt `get_text(" ", strip=True)`. Met kaal `strip=True` werd `<a>Op de blog</a> of <a>reader</a> lezen` → "Op de blogofreaderlezen", waardoor `\s+`-patronen nooit matchten. Nieuwe patronen: Pfauth like-knop/slotoproep, AI Report "Kopieer de prompt en pas het aan" (verankerd met `^…$` — de woorden komen ook in lopende tekst voor), Wilfred Rubens' voetregel "Deze pagina bevat al mijn bijdragen…".
+- **Geen gekleurde wrappers in print:** `_neutralize_wrapper_backgrounds()` in `renderer.py` haalt lichte achtergrondkleuren weg van elementen met > 1200 tekens (plus kleinere blokken in exact dezelfde kleur). AI Report zette ~40 pagina's op roze. Kaders (prompts/citaten) en donkere wrappers (lichte tekst!) blijven.
+- **Eén lettertype:** alle artikelinhoud in Georgia (behalve `pre`/`code`), tegen schreefloze inline-fonts (Billy Oppenheimer).
+- **TOC bij verzamel-edities:** `generate_toc_entry()` krijgt bij ≥ 3 tussenkoppen (h1–h3) die mee, zodat de beschrijving niet alleen het eerste item noemt; prompt verbiedt verzonnen jaartallen.
+
 ---
 
 ## Key Design Decisions

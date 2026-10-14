@@ -596,7 +596,8 @@ def summarize_digest(html_content: str, openai_api_key: str) -> str | None:
 
 
 def generate_toc_entry(
-    subject: str, sender: str, openai_api_key: str, content_snippet: str = ""
+    subject: str, sender: str, openai_api_key: str, content_snippet: str = "",
+    section_headings: list[str] | None = None,
 ) -> dict:
     """
     Genereer een korte titel en beschrijving voor de inhoudsopgave.
@@ -612,6 +613,10 @@ def generate_toc_entry(
     if content_snippet:
         # Gebruik max 400 tekens van de snippet voor context
         user_content += f"\nBegin van artikel: {content_snippet[:400]}"
+    if section_headings:
+        # Verzamel-edities (AI Report e.d.): zonder de tussenkoppen beschrijft
+        # de TOC alleen het eerste item van de mail.
+        user_content += "\nTussenkoppen: " + " | ".join(section_headings[:12])
 
     try:
         response = client.chat.completions.create(
@@ -620,10 +625,13 @@ def generate_toc_entry(
                 {
                     "role": "system",
                     "content": (
-                        "Je maakt bondige inhoudsopgave-items voor een dagelijkse krant.\n"
+                        "Je maakt bondige inhoudsopgave-items voor een weekkrant.\n"
                         "Schrijf INFORMATIEVE, FEITELIJKE tekst op basis van de daadwerkelijke inhoud.\n"
                         "VERBODEN: vage clickbait zoals 'Ontdek...', 'Verken...', 'Leer meer over...',\n"
-                        "'Bekijk...', 'Kom erachter...'. Beschrijf de KERNBOODSCHAP concreet.\n\n"
+                        "'Bekijk...', 'Kom erachter...'. Beschrijf de KERNBOODSCHAP concreet.\n"
+                        "Noem geen jaartallen of feiten die niet letterlijk in de input staan.\n"
+                        "Behandelt het artikel meerdere losse onderwerpen (zie tussenkoppen), noem\n"
+                        "dan in de titel het hoofdonderwerp en in de beschrijving 2-3 andere onderwerpen.\n\n"
                         "Geef twee dingen:\n"
                         "1. TITEL: Een beknopte, informatieve titel van max 8 woorden (Nederlands)\n"
                         "2. BESCHRIJVING: Een feitelijke samenvatting van max 12 woorden (Nederlands)\n\n"
