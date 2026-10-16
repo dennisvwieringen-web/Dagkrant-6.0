@@ -176,7 +176,12 @@ _KILLLIST_EXACT = [
 # daarop filteren werkt in elke taal, een tekstpatroon niet.
 _SUBSTACK_EXTRA_SELECTOR = (
     ".button-wrapper, .subscription-widget-wrap, .subscription-widget-wrap-editor, "
-    ".subscription-widget, .show-subscribe, .cta-caption, button"
+    ".subscription-widget, .show-subscribe, .cta-caption, button, "
+    # Webpagina-chroom bij opgehaalde Substack-posts (Lenny, week 42): de zijbalk
+    # met 'Recent Episodes' gaf 7 pagina's met elk één podcastplaatje.
+    "[aria-label='Sidebar content'], [aria-label='Recent episodes'], "
+    "[aria-label^='Post preview for'], [aria-label='Paywall'], "
+    "[aria-label='Listen on'], [aria-label='Appears in episode']"
 )
 
 # Kop van een linklijst naar eerdere posts (Ian Leslie: "Catch-up service:").
@@ -195,7 +200,11 @@ _PAID_PROMO_RE = re.compile(
     r"|discount\s+on\s+(paid\s+)?annual\s+subscriptions"
     r"|subscribe\s+to\s+[\w' ]{1,40}\s+to\s+(get|receive)\s+new\s+posts"
     r"|get\s+\d+%\s+off\s+for\s+\d+\s+year"
-    r"|finding\s+this\s+newsletter\s+valuable,?\s+share\s+it",
+    r"|finding\s+this\s+newsletter\s+valuable,?\s+share\s+it"
+    # Paywall van een RSS-voorvertoning (Lenny, week 42)
+    r"|this\s+post\s+is\s+for\s+paid\s+subscribers"
+    r"|already\s+a\s+paid\s+subscriber\??\s*(sign\s+in)?"
+    r"|keep\s+reading\s+with\s+a\s+\d+-day\s+free\s+trial",
     re.IGNORECASE,
 )
 _MAX_PROMO_CHARS = 1200

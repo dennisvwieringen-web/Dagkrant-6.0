@@ -305,6 +305,28 @@ def _reading_order(newsletters: list[dict]) -> list[dict]:
     return result + rubrics
 
 
+def _fallback_title(subject: str, limit: int = 90) -> str:
+    """Titel uit het onderwerp als er geen AI-titel is (OpenAI uitgevallen).
+
+    Vroeger `subject[:50]`: dat knipte midden in een woord ("…wereldwijde
+    achteru", week 42), zowel in de inhoudsopgave als boven het artikel.
+    Nu: gastnaam-staart (" | Josh Woodward (Google Labs)") weg en zo nodig
+    afkappen op een woordgrens met een beletselteken.
+    """
+    title = re.sub(r"\s+\|\s+[^|]{1,80}$", "", subject.strip()).rstrip(" ,;:")
+    if len(title) <= limit:
+        return title
+    cut = title[:limit].rsplit(" ", 1)[0].rstrip(" ,;:–-")
+    return cut + "…"
+
+
+def _is_english(nl: dict) -> bool:
+    """Onvertaald Engels artikel — krijgt het label 'Engels' in de inhoudsopgave."""
+    if nl.get("was_translated") or nl.get("was_summarized"):
+        return False
+    return detect_language(nl.get("html_content", "")) == "en"
+
+
 def _normalize_title(title: str) -> str:
     """Kleine letters, zonder 'Fwd:' en leestekens — voor mail-vs-RSS-vergelijking."""
     title = re.sub(r"^(fwd?|re):\s*", "", title.strip(), flags=re.IGNORECASE)
@@ -793,7 +815,7 @@ def main():
             elif openai_down:
                 # OpenAI is deze run al uitgevallen — geen AI-titel/beschrijving
                 # meer proberen, val terug op het onderwerp.
-                toc_data = {"short_title": nl["subject"][:50], "description": ""}
+                toc_data = {"short_title": _fallback_title(nl["subject"]), "description": ""}
             else:
                 toc_data = generate_toc_entry(
                     nl["subject"], nl["sender"], openai_api_key,
@@ -807,10 +829,15 @@ def main():
                 "description": toc_data["description"],
                 "was_translated": nl.get("was_translated", False),
                 "was_summarized": nl.get("was_summarized", False),
+                "is_english": _is_english(nl),
             })
             # Gebruik de Nederlandse TOC-titel ook als artikelkop in de PDF —
             # zo verschijnt er nooit een Engelse kop boven een vertaald artikel.
-            nl["display_subject"] = toc_data["short_title"]
+            # Zonder AI-titel krijgt de kop het volledige onderwerp.
+            if openai_down and not nl.get("fixed_toc"):
+                nl["display_subject"] = _fallback_title(nl["subject"], limit=200)
+            else:
+                nl["display_subject"] = toc_data["short_title"]
             logger.info(f"  TOC: '{toc_data['short_title']}'")
         except OpenAIUnavailableError as e:
             # Krediet raakte tijdens de TOC-stap op (geen enkel artikel was Engels,
@@ -823,23 +850,25 @@ def main():
             toc_entries.append({
                 "subject": nl["subject"],
                 "sender": nl["display_sender"],
-                "short_title": nl["subject"][:50],
+                "short_title": _fallback_title(nl["subject"]),
                 "description": "",
                 "was_translated": nl.get("was_translated", False),
                 "was_summarized": nl.get("was_summarized", False),
+                "is_english": _is_english(nl),
             })
-            nl["display_subject"] = nl["subject"]
+            nl["display_subject"] = _fallback_title(nl["subject"], limit=200)
         except Exception as e:
             logger.error(f"  Fout bij TOC entry voor '{nl['subject']}': {e}")
             toc_entries.append({
                 "subject": nl["subject"],
                 "sender": nl["display_sender"],
-                "short_title": nl["subject"][:50],
+                "short_title": _fallback_title(nl["subject"]),
                 "description": "",
                 "was_translated": nl.get("was_translated", False),
                 "was_summarized": nl.get("was_summarized", False),
+                "is_english": _is_english(nl),
             })
-            nl["display_subject"] = nl["subject"]
+            nl["display_subject"] = _fallback_title(nl["subject"], limit=200)
 
     # Eén gebundelde, luide waarschuwing als OpenAI is uitgevallen. De editie gaat
     # bewust wél de deur uit (deels Engels), maar dit mag niet ongemerkt blijven —
@@ -847,8 +876,7 @@ def main():
     # geprinte krant, waar de log niet te zien is).
     cover_warning = None
     if openai_down:
-        untranslated = sum(1 for nl in newsletters if not nl.get("was_translated", False)
-                           and detect_language(nl["html_content"]) == "en")
+        untranslated = sum(1 for nl in newsletters if _is_english(nl))
         logger.warning("=" * 60)
         logger.warning("⚠️ LET OP: OpenAI viel uit tijdens deze run.")
         logger.warning("   De krant is verstuurd, maar Engelse nieuwsbrieven zijn")
@@ -858,9 +886,9 @@ def main():
                        "https://platform.openai.com/settings/organization/billing")
         logger.warning("=" * 60)
         cover_warning = (
-            f"Deze editie is deels onvertaald: de automatische vertaling was tijdens "
-            f"het samenstellen niet beschikbaar, waardoor ~{untranslated} Engelse "
-            f"nieuwsbrief(ven) in het Engels zijn gebleven."
+            f"De automatische vertaling was niet beschikbaar: {untranslated} "
+            f"artikel{'' if untranslated == 1 else 'en'} met het label ‘Engels’ "
+            f"{'is' if untranslated == 1 else 'zijn'} niet vertaald."
         )
 
     # --- Stap 5: PDF samenstellen ---

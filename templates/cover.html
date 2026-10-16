@@ -163,9 +163,9 @@
             line-height: 1.3;
         }
 
-        /* Compact bij een dikke editie (40-60 artikelen sinds de Substack-feeds):
-           anders lekt de inhoudsopgave met een paar regels over naar een derde,
-           verder lege pagina. */
+        /* Compact vanaf 25 artikelen: anders lekt de inhoudsopgave met een paar
+           regels over naar een verder lege pagina (week 42: 32 artikelen, één
+           regel op pagina 2). */
         .toc-list.compact .toc-item {
             padding: 2px 0 2px 8px;
         }
@@ -226,7 +226,7 @@
 
     <div class="toc-section">
         <h2 class="toc-title">Inhoudsopgave</h2>
-        <ul class="toc-list{% if toc_entries|length > 36 %} compact{% endif %}">
+        <ul class="toc-list{% if toc_entries|length > 24 %} compact{% endif %}">
             {% for entry in toc_entries %}
             <li class="toc-item">
                 <a href="#newsletter-{{ loop.index }}" class="toc-link">
@@ -242,6 +242,8 @@
                             <span class="toc-item-translated">samengevat</span>
                             {% elif entry.was_translated %}
                             <span class="toc-item-translated">vertaald</span>
+                            {% elif entry.is_english %}
+                            <span class="toc-item-translated">Engels</span>
                             {% endif %}
                         </div>
                         {% if entry.description %}
