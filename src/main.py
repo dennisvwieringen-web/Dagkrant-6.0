@@ -368,6 +368,63 @@ def _drop_same_episode(newsletters: list[dict]) -> list[dict]:
     return [nl for k, nl in enumerate(newsletters) if k not in drop]
 
 
+_EN_MONTHS = {m: i for i, m in enumerate(
+    ("january", "february", "march", "april", "may", "june", "july", "august",
+     "september", "october", "november", "december"), 1)}
+
+
+def _digest_day(nl: dict) -> str:
+    """'Google Workspace updates from October 8' → '8 oktober'; anders de maildatum."""
+    m = re.search(r"\b([a-z]+)\s+(\d{1,2})\b", nl.get("subject", "").lower())
+    if m and m.group(1) in _EN_MONTHS:
+        return f"{int(m.group(2))} {_NL_MONTHS_SHORT[_EN_MONTHS[m.group(1)]]}"
+    try:
+        d = datetime.fromisoformat(nl.get("date", "")).astimezone(ZoneInfo("Europe/Amsterdam"))
+        return f"{d.day} {_NL_MONTHS_SHORT[d.month]}"
+    except ValueError:
+        return ""
+
+
+def _bundle_digests(newsletters: list[dict]) -> list[dict]:
+    """Alle update-mails van één digest-afzender → één stuk met een kop per mail.
+
+    Week 42: Google Workspace stuurde updates van 8, 9, 12 en 13 oktober. Als
+    losse artikelen werden dat vier stukken met dezelfde titel achter elkaar.
+    Elk deel is al apart samengevat (summarize_digest per mail, zodat niets
+    wegvalt door de invoerlimiet); hier komen ze onder één kop, oudste eerst.
+    """
+    groups: dict[str, list[dict]] = {}
+    for nl in newsletters:
+        if _is_digest(nl):
+            groups.setdefault(nl.get("display_sender", ""), []).append(nl)
+    bundles = {}
+    for name, parts in groups.items():
+        if len(parts) < 2:
+            continue
+        parts.sort(key=lambda x: x.get("date", ""))
+        days = [_digest_day(p) for p in parts]
+        html = "\n".join(
+            f"<h2>Updates van {day}</h2>\n{p['html_content']}" if day else p["html_content"]
+            for day, p in zip(days, parts)
+        )
+        span = f"{days[0]} t/m {days[-1]}" if days[0] and days[-1] else ""
+        bundle = {
+            **parts[-1],
+            "subject": f"{name} — updates van de week",
+            "html_content": html,
+            "fixed_toc": True,
+            "toc_description": (f"{len(parts)} updatemails" + (f" ({span})" if span else "")
+                                + (", samengevat." if all(p.get("was_summarized") for p in parts) else ".")),
+            "was_summarized": all(p.get("was_summarized") for p in parts),
+            "was_translated": any(p.get("was_translated") for p in parts),
+            "_content_fingerprint": _shingle_fingerprint(_get_truly_visible_text(html)),
+        }
+        bundles[id(parts[-1])] = bundle
+        logger.info(f"  📦 {len(parts)} mails van {name} gebundeld tot één stuk.")
+    merged = {id(p) for parts in groups.values() if len(parts) >= 2 for p in parts} - set(bundles)
+    return [bundles.get(id(nl), nl) for nl in newsletters if id(nl) not in merged]
+
+
 def _normalize_title(title: str) -> str:
     """Kleine letters, zonder 'Fwd:' en leestekens — voor mail-vs-RSS-vergelijking."""
     title = re.sub(r"^(fwd?|re):\s*", "", title.strip(), flags=re.IGNORECASE)
@@ -602,8 +659,9 @@ def main():
         sender_counts: dict[str, int] = {}
         filtered_by_sender = []
         for nl in newsletters:
-            if is_readwise(nl):
-                # Readwise wordt hieronder tot één rubriek gebundeld — geen limiet.
+            if is_readwise(nl) or _is_digest(nl):
+                # Readwise en digest-afzenders (Workspace) worden verderop tot één
+                # stuk gebundeld — geen limiet.
                 filtered_by_sender.append(nl)
                 continue
             sender = nl.get("sender", "").strip()
@@ -831,6 +889,7 @@ def main():
         return
 
     if not is_magazine:
+        newsletters = _bundle_digests(newsletters)
         newsletters = _drop_same_episode(newsletters)
 
     newsletters = _reading_order(newsletters)

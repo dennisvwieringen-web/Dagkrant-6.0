@@ -441,10 +441,37 @@ def fetch_article_urls(
     return urls
 
 
+# Maanden (EN + NL, ook afgekort) en getallen: wat er tussen twee nummers van een
+# reeksmail verschilt. "Google Workspace updates from October 8" en "…October 13"
+# zijn 95% gelijk, maar inhoudelijk verschillende updates.
+_SERIES_TOKEN_RE = re.compile(
+    r"\b(?:jan(?:uary|uari)?|feb(?:ruary|ruari)?|mar(?:ch)?|maart|apr(?:il)?|may|mei|"
+    r"jun[ei]?|jul[iy]?|aug(?:ust|ustus)?|sep(?:t|tember)?|oct(?:ober)?|okt(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\b|\d+"
+)
+
+
+def _series_tokens(subject: str) -> list[str]:
+    return _SERIES_TOKEN_RE.findall(subject)
+
+
+def _is_series_sibling(a: str, b: str) -> bool:
+    """Zelfde onderwerp, alleen een andere datum of ander nummer → ander nummer van een reeks."""
+    return _series_tokens(a) != _series_tokens(b) and (
+        _SERIES_TOKEN_RE.sub("#", a) == _SERIES_TOKEN_RE.sub("#", b)
+    )
+
+
 def _deduplicate_newsletters(newsletters: list[dict]) -> list[dict]:
     """
     Verwijder duplicaten op basis van subject-overeenkomst (>90%).
     Bij duplicaten: bewaar degene met de meest recente datum.
+
+    Uitzondering: reeksmails die alleen in datum of nummer verschillen
+    ("…updates from October 8" / "…October 13", "Editie 41" / "Editie 42")
+    zijn geen duplicaten. Een opnieuw verstuurde mail heeft hetzelfde onderwerp
+    en wordt dus nog steeds ontdubbeld; dezelfde mail onder hoofd- én sublabel
+    is al eerder op Message-ID weggefilterd.
     """
     if not newsletters:
         return newsletters
@@ -460,7 +487,7 @@ def _deduplicate_newsletters(newsletters: list[dict]) -> list[dict]:
             existing_subject = existing.get("subject", "").lower().strip()
             similarity = SequenceMatcher(None, subject, existing_subject).ratio()
 
-            if similarity > 0.90:
+            if similarity > 0.90 and not _is_series_sibling(subject, existing_subject):
                 # Bewaar de meest recente versie
                 if nl_date > existing.get("date", ""):
                     logger.info(
