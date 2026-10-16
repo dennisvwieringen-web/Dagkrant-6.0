@@ -327,6 +327,47 @@ def _is_english(nl: dict) -> bool:
     return detect_language(nl.get("html_content", "")) == "en"
 
 
+_TITLE_STOPWORDS = {"with", "that", "this", "from", "your", "what", "about", "into",
+                    "over", "voor", "niet", "maar", "door", "naar", "zijn", "hoe", "how"}
+
+
+def _title_words(subject: str) -> set[str]:
+    """Kernwoorden van een titel, zonder 'How I AI:'-achtig voorvoegsel en gaststaart."""
+    title = re.sub(r"\s+\|\s+[^|]{1,80}$", "", subject)
+    title = re.sub(r"^[^\w]*[\w ]{1,20}:\s+(?=\w)", "", title) if title.count(":") else title
+    words = re.findall(r"[a-zà-ÿ]{4,}", title.lower())
+    return {w for w in words if w not in _TITLE_STOPWORDS}
+
+
+def _drop_same_episode(newsletters: list[dict]) -> list[dict]:
+    """Twee stukken van dezelfde afzender over hetzelfde onderwerp → houd het langste.
+
+    Week 42: Lenny's podcastpost 'How Meta designed Muse…' en de How I AI-post
+    'How I AI: How Meta designed Muse with Alex Cornell' gingen over dezelfde
+    aflevering. Ze delen niet genoeg tekst voor de inhoudelijke dedup, wel de
+    kern van de titel: minstens 3 kernwoorden en 60% van de kortste titel.
+    """
+    drop: set[int] = set()
+    for i, a in enumerate(newsletters):
+        for j in range(i + 1, len(newsletters)):
+            b = newsletters[j]
+            if i in drop or j in drop or a.get("prebuilt") or b.get("prebuilt"):
+                continue
+            if a.get("display_sender") != b.get("display_sender"):
+                continue
+            wa, wb = _title_words(a.get("subject", "")), _title_words(b.get("subject", ""))
+            shared = wa & wb
+            if len(shared) < 3 or len(shared) < 0.6 * min(len(wa), len(wb)):
+                continue
+            la = len(_get_truly_visible_text(a["html_content"]))
+            lb = len(_get_truly_visible_text(b["html_content"]))
+            loser = j if la >= lb else i
+            logger.info(f"  ⏭ Zelfde onderwerp als een ander stuk van deze afzender: "
+                        f"'{newsletters[loser]['subject'][:60]}' — overgeslagen.")
+            drop.add(loser)
+    return [nl for k, nl in enumerate(newsletters) if k not in drop]
+
+
 def _normalize_title(title: str) -> str:
     """Kleine letters, zonder 'Fwd:' en leestekens — voor mail-vs-RSS-vergelijking."""
     title = re.sub(r"^(fwd?|re):\s*", "", title.strip(), flags=re.IGNORECASE)
@@ -788,6 +829,9 @@ def main():
     if not newsletters:
         logger.error("Geen enkele nieuwsbrief kon worden verwerkt. Gestopt.")
         return
+
+    if not is_magazine:
+        newsletters = _drop_same_episode(newsletters)
 
     newsletters = _reading_order(newsletters)
 

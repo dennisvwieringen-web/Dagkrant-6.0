@@ -322,8 +322,14 @@ def clean_html(html_content: str) -> str:
     _remove_footers(soup)
     _remove_trailing_footer_text(soup)
 
+    # Stap 8b: Linklijsten en tijdstempels van podcastposts, lege platformlabels
+    _remove_link_sections(soup)
+
     # Stap 9: Verwijder lege containers
     _remove_empty_containers(soup)
+
+    # Stap 10: Kopjes waar na alle opschoning niets meer achter staat
+    _remove_trailing_headings(soup)
 
     return str(soup)
 
@@ -841,6 +847,92 @@ def _remove_substack_extras(soup: BeautifulSoup) -> None:
         if len(text) <= _MAX_PROMO_CHARS and _PAID_PROMO_RE.search(text):
             logger.info(f"    Abonnementswerving verwijderd: '{text[:60]}'")
             el.decompose()
+
+
+# Kop boven een linklijst in podcastposts (Lenny, How I AI): in print alleen ruis.
+_LINK_SECTION_HEADING_RE = re.compile(
+    r"^\s*(where\s+to\s+find\b.{0,60}|referenced|tools\s+referenced|other\s+references"
+    r"|recommended\s+books?|resources\s+mentioned|show\s*notes|timestamps"
+    r"|in\s+this\s+episode,?\s+we\s+cover"
+    r"|blog\s+and\s+detailed\s+workflow\s+walkthroughs.{0,40})\s*:?\s*$",
+    re.IGNORECASE,
+)
+# Tijdstempelregel: "(19:07) Instagram and Pinterest connectors"
+_TIMESTAMP_LINE_RE = re.compile(r"^\s*\(?\d{1,2}:\d{2}(:\d{2})?\)?\s+\S")
+# Platformlabel waarvan de link (een embed) al is weggehaald: "Spotify:", "YouTube:"
+_EMPTY_PLATFORM_LABEL_RE = re.compile(
+    r"^\s*(spotify|youtube|apple\s+podcasts|pocket\s+casts|overcast|soundcloud)\s*:?\s*$",
+    re.IGNORECASE,
+)
+_HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"]
+
+
+def _is_link_line(el) -> bool:
+    """Blok dat (vrijwel) alleen uit links of webadressen bestaat."""
+    text = el.get_text(" ", strip=True)
+    if not text:
+        return True
+    rest = text
+    for a in el.find_all("a"):
+        rest = rest.replace(a.get_text(" ", strip=True), "")
+    rest = re.sub(r"\S*(https?://|www\.|\.com|\.ai|\.org|\.io|\.nl)\S*", "", rest)
+    return len(rest.strip(" •·-–:|\n")) <= 50
+
+
+def _remove_link_sections(soup: BeautifulSoup) -> None:
+    """Linklijsten en tijdstempels uit podcastposts, plus lege platformlabels.
+
+    Week 42: bij Lenny en How I AI besloegen 'Where to find…', 'Referenced:',
+    'Tools referenced:' en de tijdstempellijst samen ruim drie pagina's met
+    alleen webadressen. Na een kop uit _LINK_SECTION_HEADING_RE gaan de
+    volgende blokken mee zolang ze uit links bestaan; de eerste echte alinea
+    of kop stopt het.
+    """
+    for heading in list(soup.find_all(_HEADING_TAGS + ["p"])):
+        if heading.parent is None:
+            continue
+        text = heading.get_text(" ", strip=True)
+        if len(text) > 100 or not _LINK_SECTION_HEADING_RE.match(text):
+            continue
+        sib = heading.find_next_sibling()
+        while sib is not None and sib.name not in _HEADING_TAGS and _is_link_line(sib):
+            nxt = sib.find_next_sibling()
+            sib.decompose()
+            sib = nxt
+        logger.info(f"    Linklijst verwijderd: '{text[:60]}'")
+        heading.decompose()
+
+    stamps = [p for p in soup.find_all(["p", "li"])
+              if not p.find(["p", "li"]) and _TIMESTAMP_LINE_RE.match(p.get_text(" ", strip=True))]
+    if len(stamps) >= 3:
+        for p in stamps:
+            if p.parent is not None:
+                p.decompose()
+        logger.info(f"    Tijdstempellijst verwijderd ({len(stamps)} regels)")
+
+    for p in list(soup.find_all(["p", "li"])):
+        if p.parent is not None and not p.find("a") and _EMPTY_PLATFORM_LABEL_RE.match(p.get_text(" ", strip=True)):
+            p.decompose()
+
+
+def _remove_trailing_headings(soup: BeautifulSoup) -> None:
+    """Kop of aankondiging ('…:') aan het eind van een artikel zonder tekst erachter.
+
+    Ontstaat als een paywall of linklijst is weggehaald ('My biggest takeaways
+    from this conversation:' als laatste regel, week 42).
+    """
+    for _ in range(3):
+        blocks = [el for el in soup.find_all(_HEADING_TAGS + ["p", "li"])
+                  if el.get_text(strip=True) and not el.find(_HEADING_TAGS + ["p", "li"])]
+        if not blocks:
+            return
+        last = blocks[-1]
+        text = last.get_text(" ", strip=True)
+        if last.name in _HEADING_TAGS or (last.name == "p" and text.endswith(":") and len(text) < 120):
+            logger.info(f"    Losse kop aan het eind verwijderd: '{text[:60]}'")
+            last.decompose()
+        else:
+            return
 
 
 def _remove_boilerplate_intros(soup: BeautifulSoup) -> None:
