@@ -1,5 +1,5 @@
 """
-translator.py - vertaalmodule (Gemini of OpenAI, via de openai-bibliotheek).
+translator.py - vertaalmodule (Claude, Gemini of OpenAI).
 
 Detecteert de taal van HTML-content en vertaalt Engelse tekst naar het Nederlands
 met behoud van HTML-structuur en originele schrijfstijl/toon.
@@ -9,7 +9,9 @@ import logging
 import os
 import re
 import time
+from types import SimpleNamespace
 
+import anthropic
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
@@ -42,6 +44,9 @@ _PERMANENT_ERROR_MARKERS = (
     "api_key_invalid",
     "api key not valid",
     "perday",
+    # Anthropic: tegoed op (400 met deze tekst, of een 402 billing_error).
+    "credit balance is too low",
+    "billing_error",
 )
 
 
@@ -52,7 +57,19 @@ _PERMANENT_ERROR_MARKERS = (
 # openai-bibliotheek gebruiken. Zonder GEMINI_API_KEY: OpenAI zoals voorheen.
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 _gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
-PROVIDER = "gemini" if _gemini_api_key else "openai"
+
+# Claude (Anthropic), sinds 22 okt 2026 de voorkeur: Gemini's gratis laag bleek
+# maar 20 aanvragen per dag toe te staan — de herdruk van week 43 strandde
+# halverwege. Haiku is goedkoop genoeg voor een weekkrant (enkele dubbeltjes per
+# editie) en het tegoed kan in de Console automatisch bijvullen.
+_anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+
+if _anthropic_api_key:
+    PROVIDER = "anthropic"
+elif _gemini_api_key:
+    PROVIDER = "gemini"
+else:
+    PROVIDER = "openai"
 
 # Vertaalmodel. gpt-4o-mini gaf op papier zichtbare fouten ("Intern intern",
 # letterlijk "Programmatic commentaar"); gpt-4.1 vertaalt merkbaar beter.
@@ -60,7 +77,11 @@ PROVIDER = "gemini" if _gemini_api_key else "openai"
 # meer) op dit account, dan valt de run terug op het fallback-model i.p.v. alles
 # onvertaald te laten. Bij Gemini zijn de "-latest"-aliassen de standaard, zodat
 # een uitgefaseerde modelversie de krant niet stil laat vallen.
-if PROVIDER == "gemini":
+if PROVIDER == "anthropic":
+    _FALLBACK_MODEL = "claude-haiku-4-5"
+    _translation_model = os.getenv("TRANSLATION_MODEL") or "claude-haiku-5-5"
+    _toc_model = os.getenv("TOC_MODEL") or "claude-haiku-5-5"
+elif PROVIDER == "gemini":
     _FALLBACK_MODEL = "gemini-3.8-flash"  # in AI Studio gezien op 22-10-2026
     _translation_model = os.getenv("TRANSLATION_MODEL") or "gemini-flash-latest"
     # Lite-model voor de korte TOC-items: aparte quota, spaart het vertaalmodel.
@@ -82,7 +103,20 @@ _last_call = 0.0
 _send_reasoning_effort = True
 
 
-def _make_client(openai_api_key: str | None) -> OpenAI:
+# Schema voor _translate_items(): Claude kent geen response_format=json_object,
+# maar structured outputs garandeert geldige JSON in deze vorm.
+_ITEMS_SCHEMA = {
+    "type": "object",
+    "properties": {"items": {"type": "array", "items": {"type": "string"}}},
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+
+def _make_client(openai_api_key: str | None):
+    if PROVIDER == "anthropic":
+        # Ruimere retries dan de standaard 2: de SDK wacht zelf bij 429/5xx/529.
+        return anthropic.Anthropic(api_key=_anthropic_api_key, max_retries=4)
     if PROVIDER == "gemini":
         return OpenAI(api_key=_gemini_api_key, base_url=_GEMINI_BASE_URL)
     return OpenAI(api_key=openai_api_key)
@@ -96,6 +130,8 @@ def _create(client: OpenAI, **kwargs):
     rate limit hier uitzitten — de retries in de aanroepers wachten maar seconden.
     """
     global _last_call, _send_reasoning_effort
+    if PROVIDER == "anthropic":
+        return _create_claude(client, **kwargs)
     if PROVIDER != "gemini":
         return client.chat.completions.create(**kwargs)
 
@@ -120,6 +156,41 @@ def _create(client: OpenAI, **kwargs):
             raise
 
 
+def _create_claude(client: anthropic.Anthropic, **kwargs):
+    """
+    Vertaal een aanroep in chat-completion-vorm naar de Messages API en geef het
+    antwoord terug in de vorm die de aanroepers lezen
+    (response.choices[0].message.content / .finish_reason).
+
+    Denken staat uit: vertalen heeft geen redeneerstap nodig en denktokens tellen
+    mee in max_tokens. `temperature` gaat niet mee — Haiku 5.5 weigert afwijkende
+    sampling-waarden met een 400.
+    """
+    messages = kwargs["messages"]
+    params = {
+        "model": kwargs["model"],
+        "max_tokens": kwargs.get("max_tokens", 4000),
+        "messages": [m for m in messages if m["role"] != "system"],
+        "thinking": {"type": "disabled"},
+    }
+    system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+    if system:
+        params["system"] = system
+    if (kwargs.get("response_format") or {}).get("type") == "json_object":
+        params["output_config"] = {"format": {"type": "json_schema", "schema": _ITEMS_SCHEMA}}
+
+    response = client.messages.create(**params)
+    text = "".join(b.text for b in response.content if b.type == "text")
+    if response.stop_reason == "refusal":
+        # Lege inhoud: de aanroepers proberen het opnieuw of houden het origineel.
+        logger.warning("  ⚠️ Claude weigerde dit fragment — origineel blijft staan.")
+        text = ""
+    finish_reason = "length" if response.stop_reason == "max_tokens" else "stop"
+    return SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=text), finish_reason=finish_reason,
+    )])
+
+
 def _handle_model_error(exc: Exception) -> bool:
     """Schakel over op het fallback-model bij 'model bestaat niet'. True = opnieuw proberen."""
     global _translation_model
@@ -132,8 +203,10 @@ def _handle_model_error(exc: Exception) -> bool:
 
 
 def _is_model_missing(text: str) -> bool:
-    # OpenAI: "model_not_found"/"does not exist"; Gemini: 404 "models/x is not found".
-    return "model_not_found" in text or "does not exist" in text or "is not found" in text
+    # OpenAI: "model_not_found"/"does not exist"; Gemini: 404 "models/x is not found";
+    # Anthropic: 404 "not_found_error".
+    return ("model_not_found" in text or "does not exist" in text or "is not found" in text
+            or "not_found_error" in text)
 
 
 def _is_permanent_error(exc: Exception) -> bool:
@@ -144,7 +217,7 @@ def _is_permanent_error(exc: Exception) -> bool:
     wachten helpt), 'insufficient_quota' is permanent (er moet geld bij). Daarom
     kijken we naar de foutcode in de body, niet alleen naar de HTTP-status.
     """
-    if getattr(exc, "status_code", None) in (401, 403):
+    if getattr(exc, "status_code", None) in (401, 402, 403):
         return True
     text = str(exc).lower()
     return any(marker in text for marker in _PERMANENT_ERROR_MARKERS)
@@ -258,7 +331,7 @@ def translate_html(html_content: str, openai_api_key: str) -> tuple[str, float]:
     # afkapping (zie daar), maar een kleinere start-chunk maakt dat minder nodig.
     # Gemini heeft een veel ruimere outputlimiet: grotere blokken = minder
     # aanroepen, en dat telt bij de quota van de gratis laag.
-    max_chunk_size = 20000 if PROVIDER == "gemini" else 6000
+    max_chunk_size = 20000 if PROVIDER in ("gemini", "anthropic") else 6000
 
     grouped = _group_by_language(html_content, max_chunk_size)
     if not grouped:

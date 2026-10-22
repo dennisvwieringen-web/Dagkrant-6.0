@@ -1,0 +1,42 @@
+name: Vertaaltest
+
+# Eén proefvertaling via translator.py met de echte API-key — zonder Gmail,
+# zonder PDF, zonder mail. Bedoeld om na het wisselen van vertaaldienst of key
+# te controleren dat het werkt vóórdat er een editie of herdruk draait
+# (aanleiding: de Gemini-daglimiet van 20 aanvragen bleek pas midden in een
+# herdruk, 22 okt 2026).
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Proefvertaling
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd src && python - <<'EOF'
+          import logging
+          import translator as t
+          logging.basicConfig(level=logging.INFO)
+          print("Vertaaldienst:", t.PROVIDER, "| model:", t._translation_model)
+          html = ("<p>The best ideas rarely arrive fully formed. They show up as a hunch, "
+                  "a half-finished sentence in a notebook, and you have to keep them alive "
+                  "long enough to find out whether they are any good.</p>")
+          out, share = t.translate_html(html, None)
+          print("Vertaald aandeel:", round(share, 2))
+          print(out)
+          toc = t.generate_toc_entry("Why good ideas start as hunches", "Test", None, html)
+          print("TOC:", toc)
+          assert share > 0 and t.detect_language(out) == "nl", "Vertaling mislukt"
+          EOF

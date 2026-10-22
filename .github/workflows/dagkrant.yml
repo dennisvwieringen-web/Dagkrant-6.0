@@ -170,6 +170,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Gezet = vertalen via Gemini i.p.v. OpenAI (sinds 22 okt 2026, zie translator.py).
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Gezet = vertalen via Claude Haiku; wint van Gemini en OpenAI (sinds 22 okt 2026).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
           KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}

@@ -527,7 +527,7 @@ def main():
     if not gmail_password:
         missing.append("GMAIL_APP_PASSWORD")
     # Met GEMINI_API_KEY vertaalt de krant via Gemini; dan is OpenAI niet nodig.
-    if not openai_api_key and TRANSLATION_PROVIDER != "gemini":
+    if not openai_api_key and TRANSLATION_PROVIDER == "openai":
         missing.append("OPENAI_API_KEY")
     if not target_email:
         missing.append("TARGET_EMAIL")
@@ -1028,7 +1028,10 @@ def main():
         logger.warning("   De krant is verstuurd, maar Engelse nieuwsbrieven zijn")
         logger.warning("   NIET vertaald (en TOC-titels vielen terug op het onderwerp).")
         logger.warning(f"   Vermoedelijk onvertaald gebleven: ~{untranslated} artikel(en).")
-        if TRANSLATION_PROVIDER == "gemini":
+        if TRANSLATION_PROVIDER == "anthropic":
+            logger.warning("   → Controleer tegoed en key op "
+                           "https://console.anthropic.com/settings/billing")
+        elif TRANSLATION_PROVIDER == "gemini":
             logger.warning("   → Controleer key en quota in Google AI Studio "
                            "(https://aistudio.google.com) — de dagquota reset rond 09:00 NL-tijd.")
         else:
