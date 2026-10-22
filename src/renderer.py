@@ -215,10 +215,14 @@ def compose_full_html(
             classes += " flow"
         elif i in fill_after:
             classes += " fill"
+        # Indeling op onderwerp: de rubriek staat naast het artikelnummer.
+        kicker = f"Nr. {i + 1}"
+        if nl.get("rubriek"):
+            kicker += " · " + html.escape(nl["rubriek"])
         section = f"""
         <div class="{classes}" id="{anchor_id}">
             <div class="newsletter-header">
-                <span class="article-number">Nr. {i + 1}</span>
+                <span class="article-number">{kicker}</span>
                 <h2 class="newsletter-title">{nl.get('display_subject', nl['subject'])}</h2>
                 <p class="newsletter-sender">{nl.get('display_sender', nl['sender'])}</p>
             </div>
@@ -248,6 +252,15 @@ def compose_full_html(
            lekt — inclusief de voorpagina (geobserveerd: roze cover). */
         html, body {{
             background: #ffffff !important;
+        }}
+
+        /* Geen kopje als laatste regel onderaan een pagina met de tekst erna
+           op de volgende ("Leestip", week 43 p. 3). */
+        .newsletter-content h1, .newsletter-content h2, .newsletter-content h3,
+        .newsletter-content h4, .newsletter-content h5, .newsletter-content h6 {{
+            break-after: avoid;
+            page-break-after: avoid;
+            break-inside: avoid;
         }}
 
         body {{

@@ -90,6 +90,23 @@
             -webkit-column-break-inside: avoid;
         }
 
+        /* Rubriekkop (indeling op onderwerp). Blijft bij het eerste item. */
+        .toc-rubriek {
+            font-size: 9.5px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: #1f3a5f;
+            border-bottom: 1px solid #1f3a5f;
+            padding: 6px 0 2px 0;
+            break-after: avoid;
+            -webkit-column-break-after: avoid;
+            break-inside: avoid;
+        }
+        .toc-list.compact .toc-rubriek {
+            padding-top: 4px;
+        }
+
         .toc-item:last-child {
             border-bottom: none;
         }
@@ -253,6 +270,9 @@
         <h2 class="toc-title">Inhoudsopgave</h2>
         <ul class="toc-list">
             {% for entry in toc_entries %}
+            {% if entry.rubriek and (loop.first or entry.rubriek != loop.previtem.rubriek) %}
+            <li class="toc-rubriek">{{ entry.rubriek }}</li>
+            {% endif %}
             <li class="toc-item">
                 <a href="#newsletter-{{ loop.index }}" class="toc-link">
                     <span class="toc-item-number">{{ loop.index }}</span>

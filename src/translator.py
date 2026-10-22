@@ -132,6 +132,7 @@ def _create(client: OpenAI, **kwargs):
     global _last_call, _send_reasoning_effort
     if PROVIDER == "anthropic":
         return _create_claude(client, **kwargs)
+    kwargs.pop("_schema", None)  # alleen Claude gebruikt een expliciet JSON-schema
     if PROVIDER != "gemini":
         return client.chat.completions.create(**kwargs)
 
@@ -177,7 +178,8 @@ def _create_claude(client: anthropic.Anthropic, **kwargs):
     if system:
         params["system"] = system
     if (kwargs.get("response_format") or {}).get("type") == "json_object":
-        params["output_config"] = {"format": {"type": "json_schema", "schema": _ITEMS_SCHEMA}}
+        schema = kwargs.get("_schema") or _ITEMS_SCHEMA
+        params["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
 
     response = client.messages.create(**params)
     text = "".join(b.text for b in response.content if b.type == "text")
@@ -745,6 +747,70 @@ def summarize_digest(html_content: str, openai_api_key: str) -> str | None:
             logger.warning(f"  ⚠️ Samenvatten mislukt: {e}")
             return None
     return None
+
+
+# Vaste rubrieken voor de indeling op onderwerp (22 okt 2026, op verzoek van
+# Dennis: "meer op onderwerp"). Volgorde = volgorde in de krant. Readwise en
+# andere vaste rubrieken staan hier niet in: die blijven achteraan.
+RUBRIEKEN = (
+    "AI & technologie",
+    "Onderwijs & leren",
+    "Werk & ondernemen",
+    "Samenleving & politiek",
+    "Mens & cultuur",
+)
+
+
+def classify_topics(items: list[dict], openai_api_key: str | None) -> list[str] | None:
+    """
+    Deel artikelen in bij één van RUBRIEKEN, in één aanroep voor de hele editie.
+    `items`: dicts met 'title', 'sender' en 'description'. Geeft per item een
+    rubriek terug (zelfde volgorde), of None als het niet lukt — dan houdt de
+    krant de gewone volgorde.
+    """
+    import json
+
+    if not items:
+        return []
+    client = _make_client(openai_api_key)
+    listing = "\n".join(
+        f"{i}. {it['title']} — {it['sender']}: {it.get('description', '')}"
+        for i, it in enumerate(items, start=1)
+    )
+    schema = {
+        "type": "object",
+        "properties": {"topics": {"type": "array", "items": {"type": "string", "enum": list(RUBRIEKEN)}}},
+        "required": ["topics"],
+        "additionalProperties": False,
+    }
+    try:
+        response = _create(
+            client,
+            model=_toc_model,
+            messages=[
+                {"role": "system", "content": (
+                    "Je deelt artikelen van een Nederlandse weekkrant in bij precies één rubriek "
+                    "uit deze lijst: " + "; ".join(RUBRIEKEN) + ". Kies op het hoofdonderwerp, "
+                    "niet op de afzender. Geef JSON {\"topics\": [...]} met per artikel, in "
+                    "dezelfde volgorde, de exacte rubrieknaam."
+                )},
+                {"role": "user", "content": listing},
+            ],
+            temperature=0.0,
+            max_tokens=2000,
+            response_format={"type": "json_object"},
+            _schema=schema,
+        )
+        topics = json.loads(response.choices[0].message.content or "{}").get("topics")
+    except Exception as e:
+        if _is_permanent_error(e):
+            raise OpenAIUnavailableError(str(e)) from e
+        logger.warning(f"  ⚠️ Indelen op onderwerp mislukt: {e}")
+        return None
+    if not isinstance(topics, list) or len(topics) != len(items):
+        logger.warning("  ⚠️ Indelen op onderwerp gaf een onverwacht antwoord — gewone volgorde.")
+        return None
+    return [t if t in RUBRIEKEN else RUBRIEKEN[-1] for t in topics]
 
 
 def generate_toc_entry(

@@ -34,6 +34,8 @@ from substack_feed import fetch_feed_articles
 from translator import (
     PROVIDER as TRANSLATION_PROVIDER,
     OpenAIUnavailableError,
+    RUBRIEKEN,
+    classify_topics,
     detect_language,
     generate_toc_entry,
     summarize_digest,
@@ -280,6 +282,9 @@ _TRANSLATED_LABEL_SHARE = 0.2
 def _is_digest(nl: dict) -> bool:
     sender = nl.get("sender", "").lower()
     return any(marker in sender for marker in _DIGEST_SENDERS)
+
+
+_MIN_ARTICLE_CHARS = 700  # ± een korte alinea of zes; minder = teaser/betaalmuur
 
 
 def _reading_order(newsletters: list[dict]) -> list[dict]:
@@ -765,7 +770,8 @@ def main():
                 reduction = ((original_len - cleaned_len) / original_len * 100) if original_len > 0 else 0
                 logger.info(f"  [{i+1}/{len(newsletters)}] '{subject}' - {reduction:.0f}% rommel verwijderd")
 
-            # Stap 2c: Validatie zichtbare tekst (minimaal 300 tekens)
+            # Stap 2c: Validatie zichtbare tekst (minimaal 300 tekens; zie ook
+            # _MIN_ARTICLE_CHARS hieronder voor de strengere eindcontrole)
             # Gebruikt _get_truly_visible_text() die ook display:none en &nbsp;
             # weefiltert — dit vangt Substack-stijl emails met hidden preview text.
             visible_text = _get_truly_visible_text(nl["html_content"])
@@ -784,7 +790,10 @@ def main():
                     nl["html_content"] = minimal_clean(raw_html)
                     visible_text = _get_truly_visible_text(nl["html_content"])
 
-            if len(visible_text) < 300:
+            # Eindcontrole strenger dan 300: een betaalmuur-teaser (Lenny's
+            # "Community Wisdom", Molly G — week 43) kostte een hele pagina voor
+            # drie zinnen. Vaste rubrieken (Readwise) vallen hier buiten.
+            if len(visible_text) < (300 if prebuilt else _MIN_ARTICLE_CHARS):
                 logger.warning(
                     f"  ⚠️ '{subject}' heeft te weinig zichtbare tekst "
                     f"({len(visible_text)} tekens) — overgeslagen."
@@ -1015,6 +1024,39 @@ def main():
                 "is_english": _is_english(nl),
             })
             nl["display_subject"] = _fallback_title(nl["subject"], limit=200)
+
+    # Indeling op onderwerp: één AI-aanroep deelt alle artikelen in bij een vaste
+    # rubriek; daarna staan ze per rubriek bij elkaar. Binnen een rubriek blijft
+    # de leesvolgorde van _reading_order() (zelfde bron bij elkaar, oudste eerst).
+    # Vaste rubrieken (Readwise) blijven achteraan. Mislukt het, dan blijft de
+    # gewone volgorde staan.
+    if not is_magazine and not openai_down and len(newsletters) > 3:
+        try:
+            idx = [i for i, nl in enumerate(newsletters) if not nl.get("fixed_toc")]
+            topics = classify_topics(
+                [{"title": toc_entries[i]["short_title"], "sender": toc_entries[i]["sender"],
+                  "description": toc_entries[i]["description"]} for i in idx],
+                openai_api_key,
+            )
+        except OpenAIUnavailableError as e:
+            openai_down = True
+            topics = None
+            logger.warning(f"  ⚠️ Vertaaldienst onbereikbaar bij indelen op onderwerp ({e}).")
+        if topics:
+            for i, topic in zip(idx, topics):
+                toc_entries[i]["rubriek"] = newsletters[i]["rubriek"] = topic
+            for i, nl in enumerate(newsletters):
+                if nl.get("fixed_toc"):
+                    toc_entries[i]["rubriek"] = nl["rubriek"] = "Citaten van de week"
+            order = sorted(
+                range(len(newsletters)),
+                key=lambda i: (RUBRIEKEN.index(newsletters[i]["rubriek"])
+                               if newsletters[i]["rubriek"] in RUBRIEKEN else len(RUBRIEKEN), i),
+            )
+            newsletters = [newsletters[i] for i in order]
+            toc_entries = [toc_entries[i] for i in order]
+            counts = {r: sum(1 for nl in newsletters if nl.get("rubriek") == r) for r in RUBRIEKEN}
+            logger.info("  Rubrieken: " + ", ".join(f"{r} {n}" for r, n in counts.items() if n))
 
     # Eén gebundelde, luide waarschuwing als OpenAI is uitgevallen. De editie gaat
     # bewust wél de deur uit (deels Engels), maar dit mag niet ongemerkt blijven —

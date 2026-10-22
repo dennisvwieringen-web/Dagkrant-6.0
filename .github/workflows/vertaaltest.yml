@@ -38,5 +38,12 @@ jobs:
           print(out)
           toc = t.generate_toc_entry("Why good ideas start as hunches", "Test", None, html)
           print("TOC:", toc)
+          topics = t.classify_topics([
+              {"title": "Waarom goede ideeën klein beginnen", "sender": "Test", "description": "Over creativiteit"},
+              {"title": "Lerarenverloop raakt alle leerlingen", "sender": "Pedro De Bruyckere", "description": "Onderwijsonderzoek"},
+              {"title": "Anthropic zet 5 procent aandelen in publiek fonds", "sender": "AI Report", "description": "AI-bedrijf"},
+          ], None)
+          print("Rubrieken:", topics)
           assert share > 0 and t.detect_language(out) == "nl", "Vertaling mislukt"
+          assert topics and len(topics) == 3, "Indelen op onderwerp mislukt"
           EOF
