@@ -74,8 +74,10 @@ else:
 # project in AI Studio, niet publiek. Daarom: rustig tempo tussen aanroepen, bij
 # een tijdelijke 429 ruim wachten, en grote vertaalblokken (Gemini heeft een veel
 # hogere outputlimiet dan gpt-4o-mini) zodat een editie met weinig aanroepen toe kan.
-_GEMINI_MIN_INTERVAL = float(os.getenv("GEMINI_MIN_INTERVAL", "6.5"))
-_GEMINI_RATE_LIMIT_WAIT = 35
+# Geen vast traag tempo meer (6,5 s per aanroep maakte een editie te langzaam):
+# vol gas, en pas bij een 429 wachten — zo past het tempo zich aan de quota aan.
+_GEMINI_MIN_INTERVAL = float(os.getenv("GEMINI_MIN_INTERVAL", "0.5"))
+_GEMINI_RATE_LIMIT_WAIT = 20
 _last_call = 0.0
 _send_reasoning_effort = True
 
@@ -97,7 +99,7 @@ def _create(client: OpenAI, **kwargs):
     if PROVIDER != "gemini":
         return client.chat.completions.create(**kwargs)
 
-    for attempt in range(1, 5):
+    for attempt in range(1, 7):
         wait = _GEMINI_MIN_INTERVAL - (time.monotonic() - _last_call)
         if wait > 0:
             time.sleep(wait)
@@ -111,7 +113,7 @@ def _create(client: OpenAI, **kwargs):
                 logger.warning("  ⚠️ Model accepteert reasoning_effort niet — verder zonder.")
                 _send_reasoning_effort = False
                 continue
-            if getattr(e, "status_code", None) == 429 and not _is_permanent_error(e) and attempt < 4:
+            if getattr(e, "status_code", None) == 429 and not _is_permanent_error(e) and attempt < 6:
                 logger.warning(f"  ⏳ Gemini rate limit — {_GEMINI_RATE_LIMIT_WAIT}s wachten (poging {attempt}).")
                 time.sleep(_GEMINI_RATE_LIMIT_WAIT)
                 continue
