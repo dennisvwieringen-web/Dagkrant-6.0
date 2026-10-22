@@ -32,6 +32,7 @@ from web_article import expand_teaser, fetch_article
 from readwise_digest import build_readwise_bundle, is_readwise
 from substack_feed import fetch_feed_articles
 from translator import (
+    PROVIDER as TRANSLATION_PROVIDER,
     OpenAIUnavailableError,
     detect_language,
     generate_toc_entry,
@@ -512,13 +513,21 @@ def main():
     magazine_to = os.getenv("MAGAZINE_TO", "").strip()
     magazine_title = os.getenv("MAGAZINE_TITLE", "").strip()
 
+    # Herdruk: stel een eerder verstuurde weekkrant opnieuw samen (bv. omdat de
+    # vertaling toen uitviel — week 42/43, okt 2026). De verzonden-administratie
+    # weet per mail op welke dag hij verstuurd is; precies die mails komen terug.
+    # Raakt de administratie en de dagmarkering niet aan.
+    is_reprint = os.getenv("MODE", "").strip().lower() == "herdruk"
+    reprint_date = os.getenv("REPRINT_DATE", "").strip()
+
     # Validatie
     missing = []
     if not gmail_user:
         missing.append("GMAIL_USER")
     if not gmail_password:
         missing.append("GMAIL_APP_PASSWORD")
-    if not openai_api_key:
+    # Met GEMINI_API_KEY vertaalt de krant via Gemini; dan is OpenAI niet nodig.
+    if not openai_api_key and TRANSLATION_PROVIDER != "gemini":
         missing.append("OPENAI_API_KEY")
     if not target_email:
         missing.append("TARGET_EMAIL")
@@ -526,6 +535,10 @@ def main():
     if missing:
         logger.error(f"Ontbrekende environment variables: {', '.join(missing)}")
         logger.error("Maak een .env bestand aan op basis van .env.example")
+        sys.exit(1)
+
+    if is_reprint and not reprint_date:
+        logger.error("Herdruk vereist REPRINT_DATE: de verzenddatum van de editie (YYYY-MM-DD).")
         sys.exit(1)
 
     if is_magazine and (not magazine_from or not magazine_to):
@@ -542,6 +555,8 @@ def main():
     logger.info("=" * 60)
     if is_magazine:
         logger.info("DE DAGKRANT - Magazine")
+    elif is_reprint:
+        logger.info(f"DE WEEKKRANT - Herdruk van de editie van {reprint_date}")
     else:
         logger.info("DE WEEKKRANT - Wekelijkse nieuwsbundel")
     logger.info(f"Datum: {datetime.now(timezone.utc).strftime('%d %B %Y %H:%M UTC')}")
@@ -559,6 +574,16 @@ def main():
             gmail_user, gmail_password,
             since_date=since_dt, until_date=until_dt,
             newsletter_label=magazine_newsletter,
+        )
+    elif is_reprint:
+        # Ruimer dan het originele 8-dagenvenster: welke mails erin horen, bepaalt
+        # de administratie hieronder, niet het venster.
+        since_dt = _parse_local_date(reprint_date) - timedelta(days=10)
+        until_dt = _parse_local_date(reprint_date) + timedelta(days=1)
+        hours_back = int((datetime.now(timezone.utc) - since_dt).total_seconds() // 3600) + 1
+        logger.info(f"\n📬 Stap 1: Nieuwsbrieven ophalen uit Gmail (herdruk {reprint_date})...")
+        newsletters = fetch_newsletters(
+            gmail_user, gmail_password, since_date=since_dt, until_date=until_dt,
         )
     else:
         hours_back = _calculate_hours_back()
@@ -587,6 +612,18 @@ def main():
             # venster telt mee. Hooguit komt een dag uit de vorige editie dubbel.
             logger.info("Geen verzonden-administratie gevonden — start met een lege lijst.")
             seen = {"message_ids": {}, "content": []}
+
+    def in_reprint(mid: str) -> bool:
+        """Hoorde dit item bij de editie die we herdrukken?"""
+        return bool(mid) and seen["message_ids"].get(mid, "")[:10] == reprint_date
+
+    if is_reprint:
+        newsletters = [nl for nl in newsletters if in_reprint(nl.get("message_id", ""))]
+        logger.info(f"{len(newsletters)} nieuwsbrief(ven) uit de editie van {reprint_date} teruggevonden.")
+        if not newsletters:
+            logger.error("Niets teruggevonden in de verzonden-administratie — is die verlopen?")
+            sys.exit(1)
+    elif not is_magazine:
         kept = []
         for nl in newsletters:
             mid = nl.get("message_id", "")
@@ -608,7 +645,9 @@ def main():
             hours_back=hours_back,
         )
         for url in article_urls:
-            if seen is not None and url in seen["message_ids"]:
+            if is_reprint and not in_reprint(url):
+                continue
+            if not is_reprint and seen is not None and url in seen["message_ids"]:
                 logger.info(f"  ⏭ Al in eerdere editie: {url}")
                 continue
             article = fetch_article(url)
@@ -624,7 +663,10 @@ def main():
         since = datetime.now(timezone.utc) - timedelta(hours=hours_back)
         mail_subjects = [_normalize_title(nl.get("subject", "")) for nl in newsletters]
         for post in fetch_feed_articles(since):
-            if seen is not None and post["message_id"] in seen["message_ids"]:
+            if is_reprint:
+                if not in_reprint(post["message_id"]):
+                    continue
+            elif seen is not None and post["message_id"] in seen["message_ids"]:
                 continue
             title = _normalize_title(post["subject"])
             if any(SequenceMatcher(None, title, s).ratio() > 0.9 for s in mail_subjects if s):
@@ -637,7 +679,7 @@ def main():
             logger.info("Geen nieuwsbrieven gevonden voor dit magazine-filter. Klaar!")
         else:
             logger.info(f"Geen nieuwsbrieven of artikelen gevonden in de laatste {hours_back} uur. Klaar!")
-            if seen is not None:
+            if seen is not None and not is_reprint:
                 _save_seen(seen_path, seen)  # bewaar evt. eerste-run-markeringen
         return
 
@@ -853,7 +895,8 @@ def main():
             # die eerdere artikelen samenvat. Message-ID-dedup ziet dit niet:
             # voor die check is het gewoon een nieuwe, unieke mail.
             content_fp = _shingle_fingerprint(final_visible)
-            if seen is not None and _is_content_duplicate(content_fp, seen["content"]):
+            # Niet bij een herdruk: dan staat elk stuk per definitie al in de administratie.
+            if seen is not None and not is_reprint and _is_content_duplicate(content_fp, seen["content"]):
                 logger.info(
                     f"  ⏭ '{subject}' lijkt inhoudelijk sterk op iets uit een "
                     f"eerdere editie — overgeslagen."
@@ -981,12 +1024,16 @@ def main():
     if openai_down:
         untranslated = sum(1 for nl in newsletters if _is_english(nl))
         logger.warning("=" * 60)
-        logger.warning("⚠️ LET OP: OpenAI viel uit tijdens deze run.")
+        logger.warning(f"⚠️ LET OP: de vertaaldienst ({TRANSLATION_PROVIDER}) viel uit tijdens deze run.")
         logger.warning("   De krant is verstuurd, maar Engelse nieuwsbrieven zijn")
         logger.warning("   NIET vertaald (en TOC-titels vielen terug op het onderwerp).")
         logger.warning(f"   Vermoedelijk onvertaald gebleven: ~{untranslated} artikel(en).")
-        logger.warning("   → Vul krediet aan op "
-                       "https://platform.openai.com/settings/organization/billing")
+        if TRANSLATION_PROVIDER == "gemini":
+            logger.warning("   → Controleer key en quota in Google AI Studio "
+                           "(https://aistudio.google.com) — de dagquota reset rond 09:00 NL-tijd.")
+        else:
+            logger.warning("   → Vul krediet aan op "
+                           "https://platform.openai.com/settings/organization/billing")
         logger.warning("=" * 60)
         cover_warning = (
             f"De automatische vertaling was niet beschikbaar: {untranslated} "
@@ -1008,6 +1055,9 @@ def main():
             masthead_title=masthead_title, masthead_subtitle=masthead_subtitle,
             edition_label=period_label,
         )
+    elif is_reprint:
+        reprint_day = datetime.strptime(reprint_date, "%Y-%m-%d")
+        cover_kwargs = dict(edition_label=f"Week {reprint_day.isocalendar().week} · herdruk")
     else:
         cover_kwargs = {}
 
@@ -1059,6 +1109,13 @@ def main():
                 f"_{magazine_from}_tot_{magazine_to}.pdf"
             )
 
+        if is_reprint:
+            week = datetime.strptime(reprint_date, "%Y-%m-%d").isocalendar().week
+            mail_kwargs["subject"] = (
+                f"Weekkrant — week {week} (herdruk, {_format_dutch_date_only(reprint_date)})"
+            )
+            mail_kwargs["filename"] = f"Weekkrant week {week} herdruk.pdf"
+
         if target_email_enabled:
             send_email_with_pdf(
                 pdf_path=pdf_path,
@@ -1075,7 +1132,7 @@ def main():
         # Editie is verstuurd — registreer alle meegewogen mails én de
         # inhoud-fingerprints van wat daadwerkelijk verstuurd is, zodat het
         # 8-dagenvenster geen exacte of inhoudelijke duplicaten meer geeft.
-        if seen is not None:
+        if seen is not None and not is_reprint:
             sent_stamp = datetime.now(timezone.utc).isoformat()
             for mid in edition_ids:
                 seen["message_ids"][mid] = sent_stamp

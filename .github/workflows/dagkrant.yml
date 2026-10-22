@@ -61,8 +61,13 @@ name: De Dagkrant - Nieuwsbundel
         options:
           - dagkrant
           - magazine
+          - herdruk
       newsletter:
         description: 'Magazine: naam van precies een nieuwsbrief (Gmail-label)'
+        required: false
+        default: ''
+      reprint_date:
+        description: 'Herdruk: verzenddatum van de editie (YYYY-MM-DD)'
         required: false
         default: ''
       date_from:
@@ -111,7 +116,7 @@ jobs:
       # een weekritme is dat krap. Gaat de cache toch verloren, dan komt hooguit
       # een dag uit de vorige editie dubbel (het venster overlapt 1 dag).
       - name: Herstel verzonden-administratie (8-dagenvenster)
-        if: steps.marker.outputs.cache-hit != 'true' && github.event.inputs.mode != 'magazine'
+        if: (steps.marker.outputs.cache-hit != 'true' && github.event.inputs.mode != 'magazine') || github.event.inputs.mode == 'herdruk'
         uses: actions/cache/restore@v4
         with:
           path: seen_ids.json
@@ -120,18 +125,18 @@ jobs:
             dagkrant-seen-
 
       - name: Set up Python
-        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine' || github.event.inputs.mode == 'herdruk'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Install dependencies
-        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine' || github.event.inputs.mode == 'herdruk'
         run: pip install -r requirements.txt
 
       - name: Cache Playwright browsers
-        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine' || github.event.inputs.mode == 'herdruk'
         uses: actions/cache@v4
         id: playwright-cache
         with:
@@ -141,28 +146,30 @@ jobs:
             playwright-chromium-${{ runner.os }}-
 
       - name: Install Playwright system dependencies
-        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine' || github.event.inputs.mode == 'herdruk'
         run: playwright install-deps chromium
 
       - name: Install Playwright browser (skip on cache hit)
-        if: steps.playwright-cache.outputs.cache-hit != 'true' && (steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine')
+        if: steps.playwright-cache.outputs.cache-hit != 'true' && (steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine' || github.event.inputs.mode == 'herdruk')
         run: playwright install chromium
 
       # Substack-feeds zoals de pc ze ophaalde (zie kop). Ontbreekt de branch of
       # het bestand, dan probeert substack_feed.py het live (en logt de 403).
       - name: Haal Substack-cache op
-        if: steps.marker.outputs.cache-hit != 'true' && github.event.inputs.mode != 'magazine'
+        if: (steps.marker.outputs.cache-hit != 'true' && github.event.inputs.mode != 'magazine') || github.event.inputs.mode == 'herdruk'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           curl -sfL -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github.raw"             "https://api.github.com/repos/${{ github.repository }}/contents/substack_cache.json?ref=substack-cache"             -o substack_cache.json || echo "Geen Substack-cache gevonden."
 
       - name: Run De Weekkrant
-        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine'
+        if: steps.marker.outputs.cache-hit != 'true' || github.event.inputs.mode == 'magazine' || github.event.inputs.mode == 'herdruk'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Gezet = vertalen via Gemini i.p.v. OpenAI (sinds 22 okt 2026, zie translator.py).
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
           KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
@@ -173,6 +180,7 @@ jobs:
           MAGAZINE_FROM: ${{ github.event.inputs.date_from }}
           MAGAZINE_TO: ${{ github.event.inputs.date_to }}
           MAGAZINE_TITLE: ${{ github.event.inputs.title }}
+          REPRINT_DATE: ${{ github.event.inputs.reprint_date }}
           SEEN_IDS_FILE: ${{ github.workspace }}/seen_ids.json
           SUBSTACK_CACHE_FILE: ${{ github.workspace }}/substack_cache.json
         run: cd src && python main.py
@@ -180,11 +188,11 @@ jobs:
       # Markeer pas NA een geslaagde verzending. Faalt de run, dan blijft de
       # markering uit en kan een volgende trigger het opnieuw proberen.
       - name: Schrijf dagmarkering
-        if: success() && github.event.inputs.mode != 'magazine' && steps.marker.outputs.cache-hit != 'true'
+        if: success() && github.event.inputs.mode != 'magazine' && github.event.inputs.mode != 'herdruk' && steps.marker.outputs.cache-hit != 'true'
         run: date > .sent-marker
 
       - name: Bewaar dagmarkering
-        if: success() && github.event.inputs.mode != 'magazine' && steps.marker.outputs.cache-hit != 'true'
+        if: success() && github.event.inputs.mode != 'magazine' && github.event.inputs.mode != 'herdruk' && steps.marker.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .sent-marker
@@ -194,12 +202,12 @@ jobs:
       # een geslaagde verzending). hashFiles-check: sla niets op als het bestand
       # er niet is (bv. run zonder nieuwsbrieven vóór de eerste editie).
       - name: Bewaar verzonden-administratie
-        if: success() && github.event.inputs.mode != 'magazine' && steps.marker.outputs.cache-hit != 'true' && hashFiles('seen_ids.json') != ''
+        if: success() && github.event.inputs.mode != 'magazine' && github.event.inputs.mode != 'herdruk' && steps.marker.outputs.cache-hit != 'true' && hashFiles('seen_ids.json') != ''
         uses: actions/cache/save@v4
         with:
           path: seen_ids.json
           key: dagkrant-seen-${{ github.run_id }}
 
       - name: Al verstuurd vandaag — overgeslagen
-        if: steps.marker.outputs.cache-hit == 'true' && github.event.inputs.mode != 'magazine'
+        if: steps.marker.outputs.cache-hit == 'true' && github.event.inputs.mode != 'magazine' && github.event.inputs.mode != 'herdruk'
         run: echo "Editie van ${{ steps.date.outputs.today }} is vandaag al verstuurd. Run overgeslagen."

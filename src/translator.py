@@ -1,5 +1,5 @@
 """
-translator.py - OpenAI vertaalmodule.
+translator.py - vertaalmodule (Gemini of OpenAI, via de openai-bibliotheek).
 
 Detecteert de taal van HTML-content en vertaalt Engelse tekst naar het Nederlands
 met behoud van HTML-structuur en originele schrijfstijl/toon.
@@ -37,29 +37,101 @@ _PERMANENT_ERROR_MARKERS = (
     "invalid_api_key",
     "account_deactivated",
     "billing_hard_limit_reached",
+    # Gemini: ongeldige key, of de dagquota van de gratis laag is op (de quota-id
+    # in de foutmelding bevat dan "PerDay"; een minuutlimiet is wél tijdelijk).
+    "api_key_invalid",
+    "api key not valid",
+    "perday",
 )
 
 
+# Provider. Sinds 22 okt 2026 vertaalt de krant via Gemini (gratis laag, key uit
+# Google AI Studio) zodra GEMINI_API_KEY gezet is: het prepaid OpenAI-krediet
+# raakte opnieuw op (week 43 ging met 13 Engelse artikelen de deur uit). Gemini
+# heeft een OpenAI-compatibel endpoint, dus de rest van deze module blijft de
+# openai-bibliotheek gebruiken. Zonder GEMINI_API_KEY: OpenAI zoals voorheen.
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+_gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+PROVIDER = "gemini" if _gemini_api_key else "openai"
+
 # Vertaalmodel. gpt-4o-mini gaf op papier zichtbare fouten ("Intern intern",
-# letterlijk "Programmatic commentaar"); gpt-4.1 vertaalt merkbaar beter en kost
-# bij 2-3 vertaalde stukken per week enkele centen. Overschrijfbaar via env.
-# Bestaat het model (niet meer) op dit account, dan valt de run terug op
-# gpt-4o-mini i.p.v. alles onvertaald te laten.
-_FALLBACK_MODEL = "gpt-4o-mini"
-_translation_model = os.getenv("TRANSLATION_MODEL", "gpt-4.1")
+# letterlijk "Programmatic commentaar"); gpt-4.1 vertaalt merkbaar beter.
+# Overschrijfbaar via env TRANSLATION_MODEL / TOC_MODEL. Bestaat het model (niet
+# meer) op dit account, dan valt de run terug op het fallback-model i.p.v. alles
+# onvertaald te laten. Bij Gemini zijn de "-latest"-aliassen de standaard, zodat
+# een uitgefaseerde modelversie de krant niet stil laat vallen.
+if PROVIDER == "gemini":
+    _FALLBACK_MODEL = "gemini-3.8-flash"  # in AI Studio gezien op 22-10-2026
+    _translation_model = os.getenv("TRANSLATION_MODEL") or "gemini-flash-latest"
+    # Lite-model voor de korte TOC-items: aparte quota, spaart het vertaalmodel.
+    _toc_model = os.getenv("TOC_MODEL") or "gemini-flash-lite-latest"
+else:
+    _FALLBACK_MODEL = "gpt-4o-mini"
+    _translation_model = os.getenv("TRANSLATION_MODEL") or "gpt-4.1"
+    _toc_model = os.getenv("TOC_MODEL") or "gpt-4o-mini"
+
+# Gemini-free-tier: de limieten (aanvragen per minuut/dag) staan alleen per
+# project in AI Studio, niet publiek. Daarom: rustig tempo tussen aanroepen, bij
+# een tijdelijke 429 ruim wachten, en grote vertaalblokken (Gemini heeft een veel
+# hogere outputlimiet dan gpt-4o-mini) zodat een editie met weinig aanroepen toe kan.
+_GEMINI_MIN_INTERVAL = float(os.getenv("GEMINI_MIN_INTERVAL", "6.5"))
+_GEMINI_RATE_LIMIT_WAIT = 35
+_last_call = 0.0
+_send_reasoning_effort = True
+
+
+def _make_client(openai_api_key: str | None) -> OpenAI:
+    if PROVIDER == "gemini":
+        return OpenAI(api_key=_gemini_api_key, base_url=_GEMINI_BASE_URL)
+    return OpenAI(api_key=openai_api_key)
+
+
+def _create(client: OpenAI, **kwargs):
+    """
+    Eén chat-completion-aanroep, met de provider-specifieke regels erbij.
+    Bij Gemini: tempo bewaken, denkbudget laag houden (vertalen heeft geen
+    redeneerstap nodig en denktokens tellen mee in max_tokens) en een tijdelijke
+    rate limit hier uitzitten — de retries in de aanroepers wachten maar seconden.
+    """
+    global _last_call, _send_reasoning_effort
+    if PROVIDER != "gemini":
+        return client.chat.completions.create(**kwargs)
+
+    for attempt in range(1, 5):
+        wait = _GEMINI_MIN_INTERVAL - (time.monotonic() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.monotonic()
+        extra = {"reasoning_effort": "low"} if _send_reasoning_effort else {}
+        try:
+            return client.chat.completions.create(**kwargs, **extra)
+        except Exception as e:
+            text = str(e).lower()
+            if extra and getattr(e, "status_code", None) == 400 and "reasoning" in text:
+                logger.warning("  ⚠️ Model accepteert reasoning_effort niet — verder zonder.")
+                _send_reasoning_effort = False
+                continue
+            if getattr(e, "status_code", None) == 429 and not _is_permanent_error(e) and attempt < 4:
+                logger.warning(f"  ⏳ Gemini rate limit — {_GEMINI_RATE_LIMIT_WAIT}s wachten (poging {attempt}).")
+                time.sleep(_GEMINI_RATE_LIMIT_WAIT)
+                continue
+            raise
 
 
 def _handle_model_error(exc: Exception) -> bool:
     """Schakel over op het fallback-model bij 'model bestaat niet'. True = opnieuw proberen."""
     global _translation_model
     text = str(exc).lower()
-    if _translation_model != _FALLBACK_MODEL and (
-        "model_not_found" in text or "does not exist" in text
-    ):
+    if _translation_model != _FALLBACK_MODEL and _is_model_missing(text):
         logger.warning(f"  ⚠️ Vertaalmodel '{_translation_model}' niet beschikbaar — val terug op {_FALLBACK_MODEL}.")
         _translation_model = _FALLBACK_MODEL
         return True
     return False
+
+
+def _is_model_missing(text: str) -> bool:
+    # OpenAI: "model_not_found"/"does not exist"; Gemini: 404 "models/x is not found".
+    return "model_not_found" in text or "does not exist" in text or "is not found" in text
 
 
 def _is_permanent_error(exc: Exception) -> bool:
@@ -174,7 +246,7 @@ def translate_html(html_content: str, openai_api_key: str) -> tuple[str, float]:
         label "vertaald" pas bij een substantieel aandeel, zodat een Nederlandse
         nieuwsbrief met één Engels videobijschrift niet als vertaald te boek staat.
     """
-    client = OpenAI(api_key=openai_api_key)
+    client = _make_client(openai_api_key)
 
     # Verlaagd van 8000: bij lange, markup-zware nieuwsbrieven (veel geneste
     # <table>/inline-style opmaak, zoals Lenny's Newsletter) kon een chunk van
@@ -182,7 +254,9 @@ def translate_html(html_content: str, openai_api_key: str) -> tuple[str, float]:
     # halverwege afkappen (finish_reason="length") — met een Engelse staart
     # tot gevolg. _translate_chunk() splitst zo'n chunk nu alsnog verder bij
     # afkapping (zie daar), maar een kleinere start-chunk maakt dat minder nodig.
-    max_chunk_size = 6000
+    # Gemini heeft een veel ruimere outputlimiet: grotere blokken = minder
+    # aanroepen, en dat telt bij de quota van de gratis laag.
+    max_chunk_size = 20000 if PROVIDER == "gemini" else 6000
 
     grouped = _group_by_language(html_content, max_chunk_size)
     if not grouped:
@@ -213,7 +287,7 @@ def translate_quotes(html_content: str, openai_api_key: str, selector: str) -> t
     citaten van de Readwise-rubriek) en laat al het andere — boektitels,
     auteursnamen — onaangeroerd. Zelfde returnwaarde als translate_html().
     """
-    client = OpenAI(api_key=openai_api_key)
+    client = _make_client(openai_api_key)
     total_chars = _text_len(html_content) or 1
     result, chars = _translate_residual_english(client, html_content, selector=selector)
     return result, min(1.0, chars / total_chars)
@@ -285,7 +359,8 @@ def _translate_items(client: OpenAI, items: list[str]) -> list[str] | None:
     import json
 
     try:
-        response = client.chat.completions.create(
+        response = _create(
+            client,
             model=_translation_model,
             messages=[
                 {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT + (
@@ -406,7 +481,8 @@ def _translate_chunk(
     for attempt in range(1, max_attempts + 1):
         try:
             logger.debug(f"  Vertalen chunk van {len(html_chunk)} tekens (poging {attempt})...")
-            response = client.chat.completions.create(
+            response = _create(
+                client,
                 model=_translation_model,
                 messages=[
                     {"role": "system", "content": _TRANSLATE_SYSTEM_PROMPT},
@@ -570,10 +646,11 @@ def summarize_digest(html_content: str, openai_api_key: str) -> str | None:
     blokken per update. Geeft None bij een fout; dan blijft het volledige stuk staan.
     """
     text = BeautifulSoup(html_content, "html.parser").get_text("\n", strip=True)[:40000]
-    client = OpenAI(api_key=openai_api_key)
+    client = _make_client(openai_api_key)
     for attempt in (1, 2):
         try:
-            response = client.chat.completions.create(
+            response = _create(
+                client,
                 model=_translation_model,
                 messages=[
                     {"role": "system", "content": _DIGEST_SYSTEM_PROMPT},
@@ -606,7 +683,8 @@ def generate_toc_entry(
     Returns:
         Dict met 'short_title' (max 8 woorden) en 'description' (feitelijke samenvatting).
     """
-    client = OpenAI(api_key=openai_api_key)
+    global _toc_model
+    client = _make_client(openai_api_key)
 
     # Bouw de user-content op met optionele snippet
     user_content = f"Onderwerp: {subject}\nAfzender: {sender}"
@@ -619,8 +697,9 @@ def generate_toc_entry(
         user_content += "\nTussenkoppen: " + " | ".join(section_headings[:12])
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = _create(
+            client,
+            model=_toc_model,
             messages=[
                 {
                     "role": "system",
@@ -648,7 +727,7 @@ def generate_toc_entry(
             temperature=0.3,
             max_tokens=100,
         )
-        text = response.choices[0].message.content.strip()
+        text = (response.choices[0].message.content or "").strip()
 
         # Parse het resultaat
         short_title = subject  # fallback
@@ -665,5 +744,9 @@ def generate_toc_entry(
     except Exception as e:
         if _is_permanent_error(e):
             raise OpenAIUnavailableError(str(e)) from e
+        if _toc_model != _FALLBACK_MODEL and _is_model_missing(str(e).lower()):
+            logger.warning(f"  ⚠️ TOC-model '{_toc_model}' niet beschikbaar — val terug op {_FALLBACK_MODEL}.")
+            _toc_model = _FALLBACK_MODEL
+            return generate_toc_entry(subject, sender, openai_api_key, content_snippet, section_headings)
         logger.error(f"Fout bij genereren TOC entry: {e}")
         return {"short_title": subject, "description": ""}
