@@ -550,6 +550,42 @@ def _embed_cover_thumbnail(pdf_path: str, screenshot_png: bytes) -> None:
 
 
 _NEARLY_EMPTY_CHARS = 300  # ± vijf regels tekst
+
+# Voorpagina + inhoudsopgave moeten op één A4 passen. Gemeten in de browser bij
+# printbreedte: 297 mm − 15 mm boven − 18 mm onder = 264 mm ≈ 998 px; iets marge.
+# Stapsgewijs compacter (zie de fit-klassen in cover.html), daarna als laatste
+# redmiddel de inhoudsopgave verkleinen. Een tweede pagina met twee regels kost
+# een vel papier (week 43: 31 artikelen, p. 2 bijna leeg).
+_PRINT_WIDTH_PX = 680  # 210 mm − 2 × 15 mm
+_FIT_COVER_JS = """
+() => {
+    const cover = document.querySelector('.cover-page');
+    const list = document.querySelector('.toc-list');
+    const toc = document.querySelector('.toc-section');
+    if (!cover || !list || !toc) return null;
+    const LIMIT = 985;
+    const fits = () => cover.getBoundingClientRect().height <= LIMIT;
+    // Iets kleiner zetten (tot minZoom) gaat vóór het schrappen van inhoud.
+    const shrink = (minZoom) => {
+        let z = 1;
+        while (!fits() && z > minZoom) {
+            z = Math.round((z - 0.05) * 100) / 100;
+            toc.style.zoom = z;
+        }
+        if (!fits()) toc.style.zoom = 1;
+        return fits() ? z : 1;
+    };
+    const steps = ['compact', 'fit-2', 'fit-3', 'fit-4'];
+    let level = 0, zoom = 1;
+    while (!fits() && level < steps.length) {
+        list.classList.add(steps[level]);
+        level++;
+        if (!fits() && level >= 2) zoom = shrink(0.85);
+    }
+    if (!fits()) zoom = shrink(0.6);
+    return {level: level, zoom: zoom, height: Math.round(cover.getBoundingClientRect().height), fits: fits()};
+}
+"""
 _SPARSE_PAGE_CHARS = 700  # ± een kwart pagina tekst
 _ARTICLE_MARKER_RE = re.compile(r"N ?R ?\. +((?:\d ?)+)")
 
@@ -661,6 +697,19 @@ def render_pdf(html_content: str, output_path: str, footer_label: str = "De Week
 
             # Screenshot van voorblad voor Kindle-bibliotheekthumbnail (A4-breedte viewport)
             cover_screenshot = page.screenshot(clip={"x": 0, "y": 0, "width": 794, "height": 1123})
+
+            # Inhoudsopgave op één pagina: meten in printopmaak en -breedte.
+            # (Na de screenshot hierboven, die de schermweergave moet hebben.)
+            page.set_viewport_size({"width": _PRINT_WIDTH_PX, "height": 1000})
+            page.emulate_media(media="print")
+            fit = page.evaluate(_FIT_COVER_JS)
+            if fit and (fit["level"] or fit["zoom"] < 1):
+                logger.info(
+                    f"  Inhoudsopgave passend gemaakt: stap {fit['level']}, "
+                    f"zoom {fit['zoom']}, hoogte {fit['height']}px."
+                )
+            if fit and not fit["fits"]:
+                logger.warning("  ⚠️ Inhoudsopgave past ook verkleind niet op één pagina.")
 
             # De krant wordt geprint: paginanummers onderaan (in de 15mm-marge).
             pdf_options = dict(

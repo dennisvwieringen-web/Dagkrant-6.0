@@ -1,7 +1,8 @@
 <div class="cover-page">
     <style>
-        /* Blokindeling (geen flex, geen max-height): een weekkrant heeft een
-           inhoudsopgave die over meerdere pagina's mag doorlopen. */
+        /* Blokindeling (geen flex, geen max-height). De inhoudsopgave moet op
+           één pagina passen: renderer.py meet de voorpagina vóór het printen en
+           zet zo nodig de fit-klassen hieronder aan (_FIT_COVER_JS). */
         .cover-page {
             display: block;
             text-align: center;
@@ -163,9 +164,9 @@
             line-height: 1.3;
         }
 
-        /* Compact vanaf 25 artikelen: anders lekt de inhoudsopgave met een paar
-           regels over naar een verder lege pagina (week 42: 32 artikelen, één
-           regel op pagina 2). */
+        /* Stap 1 van het passend maken: compacter. Vroeger vast vanaf 25
+           artikelen, maar week 43 (31 artikelen) lekte zo nog steeds twee items
+           over naar een verder lege pagina 2. Nu gemeten, zie renderer.py. */
         .toc-list.compact .toc-item {
             padding: 2px 0 2px 8px;
         }
@@ -180,6 +181,30 @@
             font-size: 9px;
             line-height: 1.2;
             margin-top: 0;
+        }
+
+        /* Stap 2: beschrijving op één regel. min-width: 0 is nodig, anders
+           rekt het flex-item mee met de nowrap-tekst en loopt die over de kolom. */
+        .toc-list.fit-2 .toc-item-content {
+            min-width: 0;
+            overflow: hidden;
+        }
+        .toc-list.fit-2 .toc-item-description {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* Stap 3: geen beschrijvingen meer, alleen titel, bron en pagina. */
+        .toc-list.fit-3 .toc-item-description {
+            display: none;
+        }
+        /* Stap 4: drie kolommen. */
+        .toc-list.fit-4 {
+            column-count: 3;
+            column-gap: 16px;
+        }
+        .toc-list.fit-4 .toc-item-subject {
+            font-size: 9.5px;
         }
 
         .cover-footer {
@@ -226,7 +251,7 @@
 
     <div class="toc-section">
         <h2 class="toc-title">Inhoudsopgave</h2>
-        <ul class="toc-list{% if toc_entries|length > 24 %} compact{% endif %}">
+        <ul class="toc-list">
             {% for entry in toc_entries %}
             <li class="toc-item">
                 <a href="#newsletter-{{ loop.index }}" class="toc-link">
