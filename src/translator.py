@@ -761,12 +761,17 @@ RUBRIEKEN = (
 )
 
 
-def classify_topics(items: list[dict], openai_api_key: str | None) -> list[str] | None:
+def classify_topics(items: list[dict], openai_api_key: str | None) -> list[dict] | None:
     """
-    Deel artikelen in bij één van RUBRIEKEN, in één aanroep voor de hele editie.
-    `items`: dicts met 'title', 'sender' en 'description'. Geeft per item een
-    rubriek terug (zelfde volgorde), of None als het niet lukt — dan houdt de
-    krant de gewone volgorde.
+    Deel artikelen in bij één van RUBRIEKEN, in één aanroep voor de hele editie,
+    en markeer reclame/mededelingen. `items`: dicts met 'title', 'sender' en
+    'description'. Geeft per item {'rubriek': ..., 'reclame': bool} terug (zelfde
+    volgorde), of None als het niet lukt — dan houdt de krant de gewone volgorde.
+
+    Week 45 (6 nov 2026): het model gaf een lijst van de verkeerde lengte terug,
+    en omdat de rubrieken alleen op volgorde werden gekoppeld, verviel de hele
+    indeling. Nu draagt elk antwoord het artikelnummer; een paar ontbrekende of
+    dubbele nummers kosten alleen die artikelen hun rubriek (→ laatste rubriek).
     """
     import json
 
@@ -779,10 +784,20 @@ def classify_topics(items: list[dict], openai_api_key: str | None) -> list[str] 
     )
     schema = {
         "type": "object",
-        "properties": {"topics": {"type": "array", "items": {"type": "string", "enum": list(RUBRIEKEN)}}},
-        "required": ["topics"],
+        "properties": {"artikelen": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "nr": {"type": "integer"},
+                "rubriek": {"type": "string", "enum": list(RUBRIEKEN)},
+                "reclame": {"type": "boolean"},
+            },
+            "required": ["nr", "rubriek", "reclame"],
+            "additionalProperties": False,
+        }}},
+        "required": ["artikelen"],
         "additionalProperties": False,
     }
+    raw = ""
     try:
         response = _create(
             client,
@@ -791,26 +806,56 @@ def classify_topics(items: list[dict], openai_api_key: str | None) -> list[str] 
                 {"role": "system", "content": (
                     "Je deelt artikelen van een Nederlandse weekkrant in bij precies één rubriek "
                     "uit deze lijst: " + "; ".join(RUBRIEKEN) + ". Kies op het hoofdonderwerp, "
-                    "niet op de afzender. Geef JSON {\"topics\": [...]} met per artikel, in "
-                    "dezelfde volgorde, de exacte rubrieknaam."
+                    "niet op de afzender.\n"
+                    "Zet daarnaast 'reclame' op true als het stuk GEEN inhoudelijk artikel is, "
+                    "maar alleen: een kortingsactie of verkooppraatje, een aankondiging van een "
+                    "pauze, evenement, webinar of livestream, een ledenupdate over nieuwe "
+                    "diensten, of een vacature. Een gewoon artikel, essay, nieuwsoverzicht of "
+                    "boekentip is GEEN reclame, ook niet als er een link naar een product in staat. "
+                    "Twijfel je, kies dan false.\n"
+                    "Geef JSON {\"artikelen\": [{\"nr\": 1, \"rubriek\": \"...\", "
+                    "\"reclame\": false}, ...]} met precies één object per genummerd artikel."
                 )},
                 {"role": "user", "content": listing},
             ],
             temperature=0.0,
-            max_tokens=2000,
+            max_tokens=4000,
             response_format={"type": "json_object"},
             _schema=schema,
         )
-        topics = json.loads(response.choices[0].message.content or "{}").get("topics")
+        raw = response.choices[0].message.content or ""
+        answers = json.loads(raw or "{}").get("artikelen")
     except Exception as e:
         if _is_permanent_error(e):
             raise OpenAIUnavailableError(str(e)) from e
-        logger.warning(f"  ⚠️ Indelen op onderwerp mislukt: {e}")
+        logger.warning(f"  ⚠️ Indelen op onderwerp mislukt: {e} — antwoord: {raw[:300]!r}")
         return None
-    if not isinstance(topics, list) or len(topics) != len(items):
-        logger.warning("  ⚠️ Indelen op onderwerp gaf een onverwacht antwoord — gewone volgorde.")
+    if not isinstance(answers, list):
+        logger.warning(f"  ⚠️ Indelen op onderwerp gaf een onverwacht antwoord: {raw[:300]!r}")
         return None
-    return [t if t in RUBRIEKEN else RUBRIEKEN[-1] for t in topics]
+
+    by_nr: dict[int, dict] = {}
+    for a in answers:
+        if isinstance(a, dict) and isinstance(a.get("nr"), int) and 1 <= a["nr"] <= len(items):
+            by_nr.setdefault(a["nr"], a)
+    missing = len(items) - len(by_nr)
+    # Meer dan een kwart kwijt: het antwoord is niet te vertrouwen.
+    if missing > len(items) // 4:
+        logger.warning(f"  ⚠️ Indelen op onderwerp: {missing} van {len(items)} artikelen "
+                       f"zonder antwoord — gewone volgorde. Antwoord: {raw[:300]!r}")
+        return None
+    if missing:
+        logger.warning(f"  ⚠️ Indelen op onderwerp: {missing} artikel(en) zonder antwoord — "
+                       f"die komen bij '{RUBRIEKEN[-1]}'.")
+    result = []
+    for nr in range(1, len(items) + 1):
+        a = by_nr.get(nr, {})
+        rubriek = a.get("rubriek")
+        result.append({
+            "rubriek": rubriek if rubriek in RUBRIEKEN else RUBRIEKEN[-1],
+            "reclame": bool(a.get("reclame", False)),
+        })
+    return result
 
 
 def generate_toc_entry(

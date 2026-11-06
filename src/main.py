@@ -266,7 +266,108 @@ def _display_sender(sender: str) -> str:
     """'"X, Y of Einstein?" <donotreply@wordpress.com>' → 'Pedro De Bruyckere'."""
     name = re.sub(r"<[^>]*>", "", sender or "")
     name = re.sub(r"\s+", " ", name).strip().strip("\"'").strip()
-    return _SENDER_NAMES.get(name.lower(), name or sender)
+    if name.lower() in _SENDER_NAMES:
+        return _SENDER_NAMES[name.lower()]
+    # Substack: "Molly G. from Lessons", "Corine Jansen from Luisteren met Levinas"
+    # → alleen de schrijver (week 45 stond de publicatienaam erachter op de cover).
+    name = re.sub(r"\s+from\s+.+$", "", name, flags=re.IGNORECASE).strip() or name
+    return name or sender
+
+
+# Labels die niets zeggen over wie een stuk schreef.
+_GENERIC_LABELS = {"", "nieuwsbrieven", "extra artikelen"}
+
+
+def _unify_sender_names(newsletters: list[dict]) -> None:
+    """Eén afzendernaam per Gmail-label, zodat mail en RSS van één bron samengaan.
+
+    Week 45: Lenny's mails heetten "Lenny's Newsletter", zijn RSS-posts "Lenny"
+    (de feednaam). Daardoor stond Lenny als twee bronnen in de krant, 75 pagina's
+    uit elkaar. Het label is voor beide hetzelfde; de naam uit de mail wint.
+    """
+    by_label: dict[str, list[dict]] = {}
+    for nl in newsletters:
+        label = (nl.get("label") or "").strip()
+        if label.lower() not in _GENERIC_LABELS and not nl.get("prebuilt"):
+            by_label.setdefault(label.lower(), []).append(nl)
+    for items in by_label.values():
+        names = [nl["display_sender"] for nl in items]
+        if len(set(names)) < 2:
+            continue
+        mail_names = [nl["display_sender"] for nl in items if not nl.get("from_feed")] or names
+        chosen = max(dict.fromkeys(mail_names), key=mail_names.count)
+        for nl in items:
+            nl["display_sender"] = chosen
+
+
+# Reclame aan het onderwerp herkennen. Week 45: Claude Cowork stuurde in één week
+# acht kortingsmails ("Your 31% discount disappears tomorrow", "I'd rather you
+# didn't pay full price"); vier haalden de krant. Bewust smal: alleen formuleringen
+# die in een gewone artikeltitel vrijwel niet voorkomen. Wat hier doorheen glipt,
+# vangt de AI-markering 'reclame' in classify_topics() (stap 4).
+_PROMO_SUBJECT_RE = re.compile(
+    r"\b\d{1,2}\s?%\s*(off|discount|korting|offer)\b"
+    r"|\bdiscount\b|\bkortingscode\b|\bpromo ?code\b"
+    r"|\bfull price\b|\bvolle prijs\b"
+    r"|\b(this|special|limited|final|last)[- ](time )?offer\b|\boffer (ends|expires|extended)\b"
+    r"|\bblack friday\b|\bcyber monday\b",
+    re.IGNORECASE,
+)
+
+
+def _is_promotion(nl: dict) -> bool:
+    return bool(_PROMO_SUBJECT_RE.search(nl.get("subject", "")))
+
+
+# Bovengrens voor het weglaten op grond van de AI-markering 'reclame': een lang
+# stuk is vrijwel altijd inhoud (hooguit mét een aanbieding erin), en liever een
+# reclamestuk te veel dan een echt artikel kwijt.
+_PROMO_MAX_CHARS = 4000
+
+
+def _content_words(text: str) -> set[str]:
+    return set(re.findall(r"[a-zà-ÿ]{5,}", text.lower()))
+
+
+# Gemeten op week 45: Timmermans NL-origineel vs. terugvertaalde Engelse versie
+# 0,48; andere stukken van één afzender hooguit 0,18 (AI Report, Wilfred Rubens,
+# Lenny, POM).
+_SAME_TEXT_JACCARD = 0.35
+
+
+def _drop_same_text(newsletters: list[dict]) -> list[dict]:
+    """Hetzelfde stuk in twee talen van één bron → houd het origineel.
+
+    Week 45: Frans Timmermans publiceert elke post in het Nederlands én het
+    Engels. De Nederlandse kwam via RSS, de Engelse per mail ("Help Ukraine
+    through winter") — die werd vertaald en stond er dus twee keer in. De
+    titelcheck tussen RSS en mail ziet dat niet (andere taal), de
+    shingle-dedup ook niet (andere woordvolgorde na vertalen). Woordoverlap wel.
+    Voorkeur: het niet-vertaalde stuk; anders het langste.
+    """
+    texts = [None if nl.get("prebuilt") else _get_truly_visible_text(nl["html_content"])
+             for nl in newsletters]
+    words = [_content_words(t) if t else set() for t in texts]
+    drop: set[int] = set()
+    for i, a in enumerate(newsletters):
+        for j in range(i + 1, len(newsletters)):
+            b = newsletters[j]
+            if i in drop or j in drop or not words[i] or not words[j]:
+                continue
+            same_label = (a.get("label") or "").lower() == (b.get("label") or "").lower() \
+                and (a.get("label") or "").lower() not in _GENERIC_LABELS
+            if a.get("display_sender") != b.get("display_sender") and not same_label:
+                continue
+            union = words[i] | words[j]
+            if len(words[i] & words[j]) / len(union) < _SAME_TEXT_JACCARD:
+                continue
+            ka = (not a.get("was_translated"), len(texts[i]))
+            kb = (not b.get("was_translated"), len(texts[j]))
+            loser = j if ka >= kb else i
+            logger.info(f"  ⏭ Zelfde tekst als een ander stuk van deze bron (andere taal of "
+                        f"herhaling): '{newsletters[loser]['subject'][:60]}' — overgeslagen.")
+            drop.add(loser)
+    return [nl for k, nl in enumerate(newsletters) if k not in drop]
 
 
 # Update-nieuwsbrieven die vooral uit uitroldata, licentielijsten en helplinks
@@ -695,6 +796,14 @@ def main():
     # of contentchecks afvalt — telt als gedekt: elke mail krijgt precies één kans.
     edition_ids = [nl["message_id"] for nl in newsletters if nl.get("message_id")] if not is_magazine else []
 
+    # Reclamemails vóór de afzenderlimiet eruit: anders nemen ze de plekken in
+    # van echte stukken van dezelfde afzender. Ze tellen wel als gedekt (hierboven).
+    promos = [nl for nl in newsletters if _is_promotion(nl)]
+    for nl in promos:
+        logger.info(f"  ⏭ Reclame (onderwerp): '{nl['subject'][:60]}'")
+    if promos:
+        newsletters = [nl for nl in newsletters if not _is_promotion(nl)]
+
     # Dedupliceer per afzender: maximaal MAX_PER_SENDER artikelen per afzender
     # (een week is lang genoeg voor een dagelijkse afzender om de krant te vullen).
     # In magazine-modus is juist de bedoeling om alles van de gekozen periode/
@@ -730,6 +839,7 @@ def main():
 
     for nl in newsletters:
         nl["display_sender"] = _display_sender(nl.get("sender", ""))
+    _unify_sender_names(newsletters)
 
     # --- Stap 2-3: Verwerk elke nieuwsbrief individueel ---
     # Elke nieuwsbrief wordt apart verwerkt. Als er iets misgaat,
@@ -943,6 +1053,7 @@ def main():
     if not is_magazine:
         newsletters = _bundle_digests(newsletters)
         newsletters = _drop_same_episode(newsletters)
+        newsletters = _drop_same_text(newsletters)
 
     newsletters = _reading_order(newsletters)
 
@@ -1032,7 +1143,9 @@ def main():
     # gewone volgorde staan.
     if not is_magazine and not openai_down and len(newsletters) > 3:
         try:
-            idx = [i for i, nl in enumerate(newsletters) if not nl.get("fixed_toc")]
+            # Alleen Readwise (prebuilt) staat vast achteraan; de Workspace-bundel
+            # heeft wel een vaste TOC-titel maar hoort gewoon in een rubriek.
+            idx = [i for i, nl in enumerate(newsletters) if not nl.get("prebuilt")]
             topics = classify_topics(
                 [{"title": toc_entries[i]["short_title"], "sender": toc_entries[i]["sender"],
                   "description": toc_entries[i]["description"]} for i in idx],
@@ -1043,11 +1156,24 @@ def main():
             topics = None
             logger.warning(f"  ⚠️ Vertaaldienst onbereikbaar bij indelen op onderwerp ({e}).")
         if topics:
+            promo_idx = set()
             for i, topic in zip(idx, topics):
-                toc_entries[i]["rubriek"] = newsletters[i]["rubriek"] = topic
+                toc_entries[i]["rubriek"] = newsletters[i]["rubriek"] = topic["rubriek"]
+                if topic["reclame"]:
+                    size = len(_get_truly_visible_text(newsletters[i]["html_content"]))
+                    if size <= _PROMO_MAX_CHARS:
+                        promo_idx.add(i)
+                        logger.info(f"  ⏭ Reclame/mededeling (AI): '{newsletters[i]['subject'][:60]}' "
+                                    f"({size} tekens) — weggelaten.")
+                    else:
+                        logger.info(f"  AI noemt '{newsletters[i]['subject'][:60]}' reclame, maar met "
+                                    f"{size} tekens is het vooral inhoud — blijft staan.")
             for i, nl in enumerate(newsletters):
-                if nl.get("fixed_toc"):
+                if nl.get("prebuilt"):
                     toc_entries[i]["rubriek"] = nl["rubriek"] = "Citaten van de week"
+            if promo_idx:
+                newsletters = [nl for i, nl in enumerate(newsletters) if i not in promo_idx]
+                toc_entries = [t for i, t in enumerate(toc_entries) if i not in promo_idx]
             order = sorted(
                 range(len(newsletters)),
                 key=lambda i: (RUBRIEKEN.index(newsletters[i]["rubriek"])

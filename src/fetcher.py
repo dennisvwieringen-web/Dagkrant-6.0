@@ -250,6 +250,12 @@ def fetch_newsletters(
             # Fallback: probeer alleen het opgegeven label
             folders_to_search = [label]
 
+        # Hoofdfolder als laatste: een mail die ook een sublabel heeft, wordt dan
+        # eerst onder dat sublabel geaccepteerd en krijgt de labelnaam van de
+        # nieuwsbrief ("Lenny") i.p.v. "Nieuwsbrieven". main.py gebruikt het label
+        # om de afzendernaam van mail- en RSS-stukken gelijk te trekken.
+        folders_to_search.sort(key=lambda f: f.strip('"').lower() == label.lower())
+
         logger.info(
             f"Doorzoek {len(folders_to_search)} folder(s): "
             f"{', '.join(folders_to_search)}"
