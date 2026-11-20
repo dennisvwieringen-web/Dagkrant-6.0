@@ -89,7 +89,7 @@ concurrency:
 
 jobs:
   generate-dagkrant:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # niet ubuntu-latest: 26.04 wordt (nov 2026) niet door Playwright ondersteund
 
     steps:
       - name: Checkout repository

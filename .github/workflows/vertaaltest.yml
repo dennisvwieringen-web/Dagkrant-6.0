@@ -11,7 +11,7 @@ name: Vertaaltest
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # niet ubuntu-latest: 26.04 wordt (nov 2026) niet door Playwright ondersteund
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
