@@ -125,7 +125,59 @@ def _inline_content(html_content: str) -> str:
         tag.decompose()
     for tag in soup.find_all(["html", "body"]):
         tag.unwrap()
+    _flatten_layout_tables(soup)
     return str(soup)
+
+
+def _table_rows(table) -> list:
+    """Rijen van déze tabel (niet die van geneste tabellen)."""
+    rows = []
+    for child in table.find_all(recursive=False):
+        if child.name == "tr":
+            rows.append(child)
+        elif child.name in ("tbody", "thead", "tfoot"):
+            rows.extend(child.find_all("tr", recursive=False))
+    return rows
+
+
+def _flatten_layout_tables(soup: BeautifulSoup) -> None:
+    """
+    Zet e-mail-layouttabellen (elke rij hooguit één cel) om in gewone blokken.
+
+    Week 48, p. 74: Pedro's nieuwsbrief zat in geneste tabellen met één kolom.
+    Op de verkleinde schaal waarmee render_pdf() een bijna lege laatste pagina
+    wegwerkt (0,94/0,92), schoof Chromium zo'n tabel in z'n geheel naar de
+    volgende pagina: de artikelkop bleef alleen achter op een lege pagina.
+    Blokken breken gewoon per alinea. Tabellen met meerdere kolommen (plaatje
+    naast tekst, echte gegevens) blijven tabellen.
+    """
+    for table in reversed(soup.find_all("table")):  # binnenste eerst
+        rows = _table_rows(table)
+        if any(len(r.find_all(["td", "th"], recursive=False)) > 1 for r in rows):
+            continue
+        for row in rows:
+            for cell in row.find_all(["td", "th"], recursive=False):
+                styles = [cell.get("style", "").strip().rstrip(";")]
+                if cell.get("bgcolor"):
+                    styles.append(f"background-color: {cell['bgcolor']}")
+                if cell.get("align"):
+                    styles.append(f"text-align: {cell['align']}")
+                style = "; ".join(s for s in styles if s)
+                cell.attrs = {k: v for k, v in cell.attrs.items() if k == "class"}
+                if style:
+                    cell["style"] = style
+                cell.name = "div"
+            row.unwrap()
+        for section in table.find_all(["tbody", "thead", "tfoot"], recursive=False):
+            section.unwrap()
+        styles = [table.get("style", "").strip().rstrip(";")]
+        if table.get("bgcolor"):
+            styles.append(f"background-color: {table['bgcolor']}")
+        style = "; ".join(s for s in styles if s)
+        table.attrs = {k: v for k, v in table.attrs.items() if k == "class"}
+        if style:
+            table["style"] = style
+        table.name = "div"
 
 
 # Een element met méér tekst dan dit is een wrapper (hele nieuwsbrief of groot
@@ -219,15 +271,24 @@ def compose_full_html(
         kicker = f"Nr. {i + 1}"
         if nl.get("rubriek"):
             kicker += " · " + html.escape(nl["rubriek"])
+        # Betaalmuur: zeg dat het stuk hier ophoudt, anders lijkt het afgekapt.
+        preview_note = (
+            '<p class="preview-note">Hier stopt de gratis voorvertoning; '
+            'de rest van dit stuk staat achter de betaalmuur.</p>'
+            if nl.get("is_preview") else ""
+        )
         section = f"""
         <div class="{classes}" id="{anchor_id}">
-            <div class="newsletter-header">
-                <span class="article-number">{kicker}</span>
-                <h2 class="newsletter-title">{nl.get('display_subject', nl['subject'])}</h2>
-                <p class="newsletter-sender">{nl.get('display_sender', nl['sender'])}</p>
+            <div class="header-keep">
+                <div class="newsletter-header">
+                    <span class="article-number">{kicker}</span>
+                    <h2 class="newsletter-title">{nl.get('display_subject', nl['subject'])}</h2>
+                    <p class="newsletter-sender">{nl.get('display_sender', nl['sender'])}</p>
+                </div>
             </div>
             <div class="newsletter-content">
                 {_neutralize_wrapper_backgrounds(_inline_content(nl['html_content']))}
+                {preview_note}
             </div>
         </div>
         """
@@ -327,9 +388,32 @@ def compose_full_html(
             text-decoration: underline;
         }}
 
+        /* Kop nooit los van de tekst (week 48: p. 74 alleen "NR. 16" in een
+           leeg grijs vlak, p. 97 een kop onderaan zonder tekst eronder).
+           De wrapper is onsplitsbaar en reserveert onzichtbaar ±4 regels onder
+           de kop; past dat niet meer op de pagina, dan gaat de kop mee naar de
+           volgende. De negatieve marge trekt de tekst weer omhoog, zodat de
+           zichtbare afstand gewoon 20px blijft. */
+        .header-keep {{
+            break-inside: avoid;
+            page-break-inside: avoid;
+            padding-bottom: 110px;
+            margin-bottom: -90px;
+        }}
+
+        .preview-note {{
+            margin-top: 18px;
+            padding-top: 8px;
+            border-top: 1px solid #ddd;
+            color: #777;
+            font-style: italic;
+            font-size: 12px;
+        }}
+
         .newsletter-header {{
             padding: 10px 12px 10px 14px;
-            margin-bottom: 20px;
+            margin-bottom: 0;
+            break-inside: avoid;
             page-break-after: avoid;
             border-left: 4px solid #1a365d;
             background: #f8f7f5;
@@ -600,6 +684,18 @@ _FIT_COVER_JS = """
 }
 """
 _SPARSE_PAGE_CHARS = 700  # ± een kwart pagina tekst
+
+# Mislukte afbeelding: geladen (complete) maar zonder pixels. Lazy afbeeldingen
+# die nog niet aan de beurt waren hebben complete=false en blijven staan.
+_REMOVE_BROKEN_IMAGES_JS = """
+() => {
+    let n = 0;
+    for (const img of Array.from(document.querySelectorAll('.newsletter-content img'))) {
+        if (img.complete && img.naturalWidth === 0) { img.remove(); n++; }
+    }
+    return n;
+}
+"""
 _ARTICLE_MARKER_RE = re.compile(r"N ?R ?\. +((?:\d ?)+)")
 
 
@@ -707,6 +803,12 @@ def render_pdf(html_content: str, output_path: str, footer_label: str = "De Week
                 )
             # Extra buffer zodat afbeeldingen die net binnen zijn nog kunnen tekenen.
             page.wait_for_timeout(2000)
+
+            # Afbeeldingen die niet laadden tekenen een leeg kader (week 48, p. 75:
+            # lege rechthoek naast de lesbrief). Weg ermee, vóór het meten/printen.
+            removed = page.evaluate(_REMOVE_BROKEN_IMAGES_JS)
+            if removed:
+                logger.info(f"  {removed} niet-geladen afbeelding(en) weggelaten.")
 
             # Screenshot van voorblad voor Kindle-bibliotheekthumbnail (A4-breedte viewport)
             cover_screenshot = page.screenshot(clip={"x": 0, "y": 0, "width": 794, "height": 1123})

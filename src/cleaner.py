@@ -168,6 +168,9 @@ _KILLLIST_EXACT = [
     r"vond\s+je\s+(het|dit)\s+een\s+waardevolle\s+editie",          # Pfauth slotoproep
     r"^kopieer\s+de\s+prompt\s+en\s+pas\s+(het|hem|deze)\s+aan\.?$",  # AI Report knop
     r"^klik\s+hier\s+om\s+naar\s+zoom\s+te\s+gaan\.?$",             # AI Report livestream-link
+    # Weekkrant 48 (nov 2026)
+    r"^vond\s+je\s+dit\s+een\s+goed\s+artikel\?\s+laat\s+het\s+.{1,60}\s+weten:?$",  # Lettership
+    r"^deze\s+brief\s+liken$",
 ]
 
 # Substack-extra's die op papier niets doen. Knoppen ("Subscribe now",
@@ -181,8 +184,19 @@ _SUBSTACK_EXTRA_SELECTOR = (
     # met 'Recent Episodes' gaf 7 pagina's met elk één podcastplaatje.
     "[aria-label='Sidebar content'], [aria-label='Recent episodes'], "
     "[aria-label^='Post preview for'], [aria-label='Paywall'], "
-    "[aria-label='Listen on'], [aria-label='Appears in episode']"
+    "[aria-label='Listen on'], [aria-label='Appears in episode'], "
+    # Week 48: oproep onder de post ("You're currently a free subscriber… upgrade",
+    # "X is free today… pledging a future subscription"), de betaalmuur met
+    # vinkjeslijst ("Subscriber-only posts and full archive", Lenny's "Product
+    # Pass") en de Instagram-embedbalk ("651 likes / View on Instagram").
+    ".post-cta, .cta-box, .paywall, .subscription-benefits, "
+    ".instagram-top-bar, .instagram-likes, .instagram-bottom-bar, .instagram-footer, "
+    # Lettership-likeknop ("Deze brief liken") met duimpje
+    "a[href*='/liked/'], img[src*='like-thumb']"
 )
+
+# Substack-betaalmuur in de mail: de post is maar een voorvertoning.
+_PAYWALL_SELECTOR = ".paywall, [aria-label='Paywall'], .paywall-cta"
 
 # Kop van een linklijst naar eerdere posts (Ian Leslie: "Catch-up service:").
 _CATCHUP_HEADING_RE = re.compile(
@@ -204,7 +218,12 @@ _PAID_PROMO_RE = re.compile(
     # Paywall van een RSS-voorvertoning (Lenny, week 42)
     r"|this\s+post\s+is\s+for\s+paid\s+subscribers"
     r"|already\s+a\s+paid\s+subscriber\??\s*(sign\s+in)?"
-    r"|keep\s+reading\s+with\s+a\s+\d+-day\s+free\s+trial",
+    r"|keep\s+reading\s+with\s+a\s+\d+-day\s+free\s+trial"
+    # Week 48: zelfde oproepen als losse tekst (zonder Substack-classes)
+    r"|you.re\s+(currently\s+)?a\s+free\s+subscriber\s+to"
+    r"|by\s+pledging\s+a\s+future\s+subscription"
+    r"|^\s*pledge\s+your\s+support\s*$"
+    r"|subscriber-only\s+posts\s+and\s+full\s+archive",
     re.IGNORECASE,
 )
 _MAX_PROMO_CHARS = 1200
@@ -317,6 +336,7 @@ def clean_html(html_content: str) -> str:
 
     # Stap 7: Verwijder ADVERTENTIE-blokken
     _remove_advertisements(soup)
+    _remove_promo_boxes(soup)
 
     # Stap 8: Verwijder footer-secties
     _remove_footers(soup)
@@ -857,8 +877,11 @@ _LINK_SECTION_HEADING_RE = re.compile(
     r"|blog\s+and\s+detailed\s+workflow\s+walkthroughs.{0,40})\s*:?\s*$",
     re.IGNORECASE,
 )
-# Tijdstempelregel: "(19:07) Instagram and Pinterest connectors"
-_TIMESTAMP_LINE_RE = re.compile(r"^\s*\(?\d{1,2}:\d{2}(:\d{2})?\)?\s+\S")
+# Tijdstempelregel: "(19:07) Instagram and Pinterest connectors". In de feed is
+# de tijd een link — "(<a>02:06</a>) …" — en geeft get_text(" ") dus "( 02:06 ) …".
+_TIMESTAMP_LINE_RE = re.compile(r"^\s*\(?\s*\d{1,2}:\d{2}(:\d{2})?\s*\)?\s+\S")
+# "Label: https://…" — een regel die eindigt op een uitgeschreven webadres.
+_LABELED_URL_LINE_RE = re.compile(r"^.{0,200}?:?\s*(https?://|www\.)\S+$")
 # Platformlabel waarvan de link (een embed) al is weggehaald: "Spotify:", "YouTube:"
 _EMPTY_PLATFORM_LABEL_RE = re.compile(
     r"^\s*(spotify|youtube|apple\s+podcasts|pocket\s+casts|overcast|soundcloud)\s*:?\s*$",
@@ -876,7 +899,21 @@ def _is_link_line(el) -> bool:
     for a in el.find_all("a"):
         rest = rest.replace(a.get_text(" ", strip=True), "")
     rest = re.sub(r"\S*(https?://|www\.|\.com|\.ai|\.org|\.io|\.nl)\S*", "", rest)
-    return len(rest.strip(" •·-–:|\n")) <= 50
+    if len(rest.strip(" •·-–:|\n")) <= 50:
+        return True
+    # Week 48: "• Why Atlassian has dual track…: https://…" en een <p> met
+    # <br>-regels "↳ Create an Automated Approval Digest…: https://…" — elke
+    # regel een omschrijving plus een uitgeschreven webadres.
+    lines = [l.strip() for l in el.get_text("\n").split("\n") if l.strip()]
+    joined, current = [], ""
+    for line in lines:  # get_text("\n") knipt ook binnen een regel (span/em/a)
+        current = f"{current} {line}".strip()
+        if re.search(r"(https?://|www\.)\S+$", current):
+            joined.append(current)
+            current = ""
+    if current:
+        return False
+    return bool(joined) and all(_LABELED_URL_LINE_RE.match(l) for l in joined)
 
 
 def _remove_link_sections(soup: BeautifulSoup) -> None:
@@ -977,7 +1014,7 @@ def _remove_advertisements(soup: BeautifulSoup) -> None:
         r"^\s*("
         r"advertentie"
         r"|gesponsord"
-        r"|sponsored(?:\s+by)?"
+        r"|sponsor(?:ed(?:\s+by)?)?"
         r"|vernieuwd\s+door"
         r"|brought\s+to\s+you\s+by"
         r"|presented\s+by"
@@ -1023,6 +1060,38 @@ def _remove_advertisements(soup: BeautifulSoup) -> None:
         if target and target.parent is not None:
             logger.info(f"    Advertentie-label verwijderd: '{text[:60]}'")
             target.decompose()
+
+
+_PROMO_BOX_MAX_CHARS = 600
+
+
+def _remove_promo_boxes(soup: BeautifulSoup) -> None:
+    """Gekleurd beehiiv-kader met plaatje, korte tekst en knop: een advertentie.
+
+    AI Report (week 48) zette de webinar van een sponsor zo in elk nummer, soms
+    met kop "Sponsor", soms zonder label. Herkenning op vorm: een vak met eigen
+    achtergrondkleur dat een knoprij (`tr.btn_row`) én een afbeelding bevat en
+    weinig tekst heeft. Gewone kaders (prompts, citaten) hebben geen knop.
+    """
+    for td in list(soup.find_all("td", bgcolor=True)):
+        if td.parent is None:
+            continue
+        color = (td.get("bgcolor") or "").strip().lower()
+        if color in ("", "transparent", "#ffffff", "#fff", "white"):
+            continue
+        if not (td.find("tr", class_="btn_row") and td.find("img")):
+            continue
+        text = td.get_text(" ", strip=True)
+        if len(text) <= _PROMO_BOX_MAX_CHARS:
+            logger.info(f"    Promokader verwijderd: '{text[:60]}'")
+            td.decompose()
+
+
+def is_paywalled(html_content: str) -> bool:
+    """Substack-mail die bij de betaalmuur ophoudt (alleen een voorvertoning)."""
+    if not html_content or "paywall" not in html_content.lower():
+        return False
+    return BeautifulSoup(html_content, "html.parser").select_one(_PAYWALL_SELECTOR) is not None
 
 
 def _remove_footers(soup: BeautifulSoup) -> None:

@@ -290,6 +290,9 @@
                             {% elif entry.is_english %}
                             <span class="toc-item-translated">Engels</span>
                             {% endif %}
+                            {% if entry.is_preview %}
+                            <span class="toc-item-translated">voorproefje</span>
+                            {% endif %}
                         </div>
                         {% if entry.description %}
                         <div class="toc-item-description">{{ entry.description }}</div>

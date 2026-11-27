@@ -42,7 +42,7 @@ from translator import (
     translate_html,
     translate_quotes,
 )
-from cleaner import clean_html, minimal_clean, deduplicate_title, is_website_template, strip_ai_artifacts
+from cleaner import clean_html, minimal_clean, deduplicate_title, is_website_template, strip_ai_artifacts, is_paywalled
 from renderer import (
     article_start_pages,
     compose_full_html,
@@ -875,6 +875,9 @@ def main():
             raw_html = nl["html_content"]
             if not prebuilt:
                 original_len = len(raw_html)
+                # Betaalmuur (week 48: Music Speaks, Lenny, Ian Leslie hielden
+                # midden in een zin op) — vóór het opschonen, dat haalt hem weg.
+                nl["is_preview"] = is_paywalled(raw_html)
                 nl["html_content"] = clean_html(raw_html)
                 cleaned_len = len(nl["html_content"])
                 reduction = ((original_len - cleaned_len) / original_len * 100) if original_len > 0 else 0
@@ -1096,6 +1099,7 @@ def main():
                 "was_translated": nl.get("was_translated", False),
                 "was_summarized": nl.get("was_summarized", False),
                 "is_english": _is_english(nl),
+                "is_preview": nl.get("is_preview", False),
             })
             # Gebruik de Nederlandse TOC-titel ook als artikelkop in de PDF —
             # zo verschijnt er nooit een Engelse kop boven een vertaald artikel.
@@ -1121,6 +1125,7 @@ def main():
                 "was_translated": nl.get("was_translated", False),
                 "was_summarized": nl.get("was_summarized", False),
                 "is_english": _is_english(nl),
+                "is_preview": nl.get("is_preview", False),
             })
             nl["display_subject"] = _fallback_title(nl["subject"], limit=200)
         except Exception as e:
@@ -1133,6 +1138,7 @@ def main():
                 "was_translated": nl.get("was_translated", False),
                 "was_summarized": nl.get("was_summarized", False),
                 "is_english": _is_english(nl),
+                "is_preview": nl.get("is_preview", False),
             })
             nl["display_subject"] = _fallback_title(nl["subject"], limit=200)
 
